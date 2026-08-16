@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.coverage
+htmlcov/
+.venv/
+venv/
+.tmp_pip/
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+kaggle.json
+.kaggle/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Downloaded and generated row-level data
+data/raw/**
+data/processed/**
+*.db
+*.sqlite
+*.sqlite3
+postgres-data/
+
+# Generated models, indexes, and logs
+artifacts/**
+models/**
+logs/**
+mlruns/**
+!artifacts/.gitkeep
+!models/.gitkeep

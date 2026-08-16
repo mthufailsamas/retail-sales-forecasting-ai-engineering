@@ -1,0 +1,20 @@
+.git/
+.venv/
+.vscode/
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# Development records are not required by the API image.
+*.ipynb
+*.xlsx
+README.md
+PROJECT.md
+AGENTS.md
+test_store_sales_model.py
+verify_api.py
+
+# Private data and generated artifacts are mounted read-only at runtime.
+data/
+artifacts/
+logs/
