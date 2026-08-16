@@ -19,7 +19,7 @@ consistent view of expected category demand before the next cycle begins.
 | | Summary |
 |---|---|
 | **Problem** | One overall average cannot represent demand across 54 stores, 33 product families, promotions, holidays, and local operating conditions. |
-| **Solution** | A seven-source feature pipeline compares Ridge and XGBoost chronologically, then packages the selected model for batch and API inference. |
+| **Solution** | A multi-source feature pipeline compares Ridge and XGBoost chronologically, then packages the selected model for batch and API inference. |
 | **Verified result** | The system generated 28,512 store-family forecasts with 15.6431% internal-test WAPE and 0.7623% signed bias; all 38 contract tests passed, and local API and Docker predictions matched the notebook batch exactly. |
 
 Demand moves differently across stores, product families, promotions, weekly
@@ -31,7 +31,7 @@ per run.
 
 ```mermaid
 flowchart LR
-    A["Seven Kaggle source tables"] --> B["Validated preprocessing"]
+    A["Six modeling inputs + submission schema"] --> B["Validated preprocessing"]
     B --> C["Training-only EDA"]
     C --> D["Cutoff-aligned feature engineering"]
     D --> E["Chronological model comparison"]
@@ -163,7 +163,13 @@ From Windows PowerShell in this project directory:
 
 ```powershell
 python -m venv .venv
+```
+
+```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+```powershell
 & ".\.venv\Scripts\python.exe" -m kaggle auth login
 ```
 
@@ -174,15 +180,14 @@ dependencies.
 After accepting the competition rules, download and extract the source:
 
 ```powershell
-& ".\.venv\Scripts\python.exe" -m kaggle competitions download `
-  -c store-sales-time-series-forecasting `
-  -p data\raw
+& ".\.venv\Scripts\python.exe" -m kaggle competitions download -c store-sales-time-series-forecasting -p data\raw
+```
 
-Expand-Archive `
-  -LiteralPath "data\raw\store-sales-time-series-forecasting.zip" `
-  -DestinationPath "data\raw" `
-  -Force
+```powershell
+Expand-Archive -LiteralPath "data\raw\store-sales-time-series-forecasting.zip" -DestinationPath "data\raw" -Force
+```
 
+```powershell
 Remove-Item -LiteralPath "data\raw\store-sales-time-series-forecasting.zip"
 ```
 
@@ -192,11 +197,13 @@ Open the notebooks from the project root and run them in this order:
 2. `02_STORE_SALES_EDA.ipynb`
 3. `03_STORE_SALES_MODELING.ipynb`
 
-Notebook 01 reads the seven raw CSVs, performs and validates every accepted
-join and feature transformation, then replaces the two processed CSVs. Notebook
-02 checks the exact 34-column header before EDA. Notebook 03 checks both
-processed headers before feature engineering or model fitting. These checks
-prevent an older generated file from silently entering a later stage.
+Notebook 01 inspects all seven competition files, preprocesses the six modeling
+inputs, and reserves `sample_submission.csv` for the final output-order check.
+It performs and validates every accepted join and feature transformation before
+replacing the two processed CSVs. Notebook 02 checks the exact 34-column header
+before EDA. Notebook 03 checks both processed headers before feature engineering
+or model fitting. These checks prevent an older generated file from silently
+entering a later stage.
 
 For a batch-only rebuild outside Jupyter, the same reusable preprocessing logic
 can be run with:
@@ -252,18 +259,13 @@ After all 38 tests pass, create a local key with at least 32 characters. Keep
 the value outside source code, shell commands, Docker images, and Git:
 
 ```powershell
-$env:RETAIL_FORECAST_API_KEY = Read-Host `
-  "Enter a local API key with at least 32 characters" `
-  -MaskInput
+$env:RETAIL_FORECAST_API_KEY = Read-Host "Enter a local API key with at least 32 characters" -MaskInput
 ```
 
 Then start the local API from that terminal:
 
 ```powershell
-& ".\.venv\Scripts\python.exe" -m uvicorn app:app `
-  --host 127.0.0.1 `
-  --port 8000 `
-  --no-access-log
+& ".\.venv\Scripts\python.exe" -m uvicorn app:app --host 127.0.0.1 --port 8000 --no-access-log
 ```
 
 The interactive API contract is available at
@@ -279,10 +281,10 @@ With Uvicorn still running, open a second PowerShell terminal in the project
 directory and verify the complete private batch through HTTP:
 
 ```powershell
-$env:RETAIL_FORECAST_API_KEY = Read-Host `
-  "Enter the same local API key" `
-  -MaskInput
+$env:RETAIL_FORECAST_API_KEY = Read-Host "Enter the same local API key" -MaskInput
+```
 
+```powershell
 & ".\.venv\Scripts\python.exe" verify_api.py
 ```
 

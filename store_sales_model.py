@@ -226,7 +226,7 @@ def write_deployment_history(
     *,
     overwrite: bool = False,
 ) -> Path:
-    """Write the private 35-day sales context required by a deployed API."""
+    """Write the private 35-day sales context required by the serving API."""
     missing_columns = [
         column for column in INFERENCE_HISTORY_COLUMNS if column not in history
     ]
