@@ -1,4 +1,4 @@
-name: Contract tests
+name: Contract and container tests
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   test:
-    name: Python 3.12 contract suite
+    name: Python 3.12 and Docker contracts
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -29,3 +29,49 @@ jobs:
 
       - name: Run synthetic contract tests
         run: python -m unittest -v test_store_sales_model.py
+
+      - name: Build the non-root runtime image
+        run: docker build --target runtime --tag retail-sales-forecast-api:ci .
+
+      - name: Verify the runtime image user
+        run: >
+          test "$(docker image inspect --format '{{.Config.User}}'
+          retail-sales-forecast-api:ci)" = "retail"
+
+      - name: Build the private-data-free readiness image
+        run: docker build --target ci-smoke --tag retail-sales-forecast-api:ci-smoke .
+
+      - name: Start the readiness container
+        run: >
+          docker run --rm --detach --name retail-sales-forecast-ci
+          --publish 8000:8000
+          --env RETAIL_FORECAST_API_KEY=ci-smoke-key-1234567890-abcdef-1234567890
+          --health-interval 2s --health-start-period 1s
+          --health-timeout 10s --health-retries 20
+          retail-sales-forecast-api:ci-smoke
+
+      - name: Verify container readiness and process user
+        shell: bash
+        run: |
+          for attempt in {1..30}; do
+            health_status="$(docker inspect --format '{{.State.Health.Status}}' retail-sales-forecast-ci)"
+            if [ "$health_status" = "healthy" ]; then
+              break
+            fi
+            if [ "$health_status" = "unhealthy" ]; then
+              docker logs retail-sales-forecast-ci
+              exit 1
+            fi
+            sleep 2
+          done
+          test "$(docker inspect --format '{{.State.Health.Status}}' retail-sales-forecast-ci)" = "healthy"
+          docker exec retail-sales-forecast-ci python -c "import os; assert os.getuid() != 0"
+          curl --fail --silent http://127.0.0.1:8000/health | python -c "import json, sys; payload = json.load(sys.stdin); assert payload['status'] == 'ready'"
+
+      - name: Show container logs after failure
+        if: failure()
+        run: docker logs retail-sales-forecast-ci || true
+
+      - name: Stop the readiness container
+        if: always()
+        run: docker stop retail-sales-forecast-ci || true

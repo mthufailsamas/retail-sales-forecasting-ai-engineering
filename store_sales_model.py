@@ -584,6 +584,10 @@ def validate_forecast_bundle(bundle: dict[str, Any]) -> None:
     required_keys = {"artifact_schema_version", "metadata", "processor", "model"}
     if set(bundle) != required_keys:
         raise ValueError("Forecast artifact has unexpected top-level fields.")
+    if not callable(getattr(bundle["processor"], "transform", None)):
+        raise ValueError("Forecast artifact processor has no transform interface.")
+    if not callable(getattr(bundle["model"], "predict", None)):
+        raise ValueError("Forecast artifact model has no predict interface.")
     if bundle["artifact_schema_version"] != ARTIFACT_SCHEMA_VERSION:
         raise ValueError("Forecast artifact schema version is unsupported.")
     metadata = bundle["metadata"]

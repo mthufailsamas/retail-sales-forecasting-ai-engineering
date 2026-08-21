@@ -11,7 +11,7 @@ __pycache__/
 README.md
 PROJECT.md
 AGENTS.md
-test_store_sales_model.py
+# test_store_sales_model.py stays in context for the ci-smoke target only.
 verify_api.py
 
 # Private data and generated artifacts are mounted read-only at runtime.

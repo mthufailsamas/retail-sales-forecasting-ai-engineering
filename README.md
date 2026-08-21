@@ -20,7 +20,7 @@ consistent view of expected category demand before the next cycle begins.
 |---|---|
 | **Problem** | One overall average cannot represent demand across 54 stores, 33 product families, promotions, holidays, and local operating conditions. |
 | **Solution** | A multi-source feature pipeline compares Ridge and XGBoost chronologically, then packages the selected model for batch and API inference. |
-| **Verified result** | The system generated 28,512 store-family forecasts with 15.6431% internal-test WAPE and 0.7623% signed bias; all 38 contract tests passed, and local API and Docker predictions matched the notebook batch exactly. |
+| **Verified result** | The system generated 28,512 store-family forecasts with 15.6431% internal-test WAPE and 0.7623% signed bias; all 44 contract tests passed locally, and local API and Docker predictions matched the notebook batch exactly. |
 
 Demand moves differently across stores, product families, promotions, weekly
 patterns, and local events. The system handles that variation at the
@@ -61,10 +61,10 @@ validation window.
 | Internal-test WAPE | 15.6431% |
 | Internal-test signed bias | 0.7623% |
 | Kaggle inference rows written | 28,512 |
-| Automated contract tests | 38/38 passed |
+| Automated contract tests | 44/44 passed locally |
 | API batch verification | 28,512/28,512 predictions matched |
 | Local Docker verification | Healthy; 28,512/28,512 predictions matched |
-| GitHub Actions CI | Passed on Python 3.12.10 |
+| GitHub Actions CI | Python contracts and non-root container readiness |
 
 The selected pipeline was serialized, reloaded in a fresh process, and used to
 generate the full 28,512-row batch. The same artifact ran through FastAPI and a
@@ -251,11 +251,11 @@ Run the lightweight software-contract checks separately:
 ```
 
 The tests use synthetic tables and do not read private competition rows, fit a
-model, or rerun hyperparameter tuning. They verify both valid inference and
-rejection of malformed horizons, keys, coverage, artifact environments, and
-outputs.
+model, or rerun hyperparameter tuning. They verify preprocessing semantics,
+valid inference, and rejection of malformed source events, horizons, keys,
+coverage, artifacts, and outputs.
 
-After all 38 tests pass, create a local key with at least 32 characters. Keep
+After all 44 tests pass, create a local key with at least 32 characters. Keep
 the value outside source code, shell commands, Docker images, and Git:
 
 ```powershell
@@ -307,7 +307,8 @@ client credentials return HTTP 401; missing server configuration returns HTTP
 ## Docker
 
 The API can use the same pinned environment inside a local container. The
-private artifact and processed history are not copied into the image. Stop the
+runtime stage executes as the unprivileged `retail` user, and the private
+artifact and processed history are not copied into the image. Stop the
 standalone Uvicorn process first so port 8000 is available, then build the image:
 
 ```powershell
@@ -376,8 +377,10 @@ and zero runtime or model errors.
 ## Continuous integration
 
 The GitHub Actions workflow installs Python 3.12.10 and the pinned dependencies,
-then runs all 38 synthetic contract tests on every push and pull request. Both
-the `main` and `v1.0.0` release runs passed on the published root commit.
+runs all 44 synthetic contract tests, builds the final runtime image, verifies
+its non-root user, and starts a private-data-free synthetic runtime until the
+container reports ready. The CI-only stage is separate from the final runtime
+image and does not contain competition data or the fitted retail artifact.
 
 ## Author
 

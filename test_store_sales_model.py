@@ -54,6 +54,13 @@ from store_sales_model import (
     write_batch_forecast,
     write_deployment_history,
 )
+from store_sales_preprocessing import (
+    build_oil_lookup,
+    build_transaction_lookup,
+    join_store_metadata,
+    normalize_holidays,
+    validate_final_table,
+)
 
 
 TRAINING_END = pd.Timestamp("2017-08-15")
@@ -170,6 +177,206 @@ def make_api_records() -> list[dict[str, object]]:
     future = make_future_batch()[FUTURE_COLUMNS].copy()
     future["date"] = future["date"].dt.strftime("%Y-%m-%d")
     return future.to_dict(orient="records")
+
+
+def prepare_container_smoke_runtime(output_directory: Path) -> tuple[Path, Path]:
+    """Write a private-data-free runtime used only by the CI container smoke."""
+    artifact_path = output_directory / "store_sales_forecast_v1.pkl"
+    history_path = output_directory / "store_sales_forecast_v1_history.csv.gz"
+    saved_artifact, _ = save_forecast_artifact(
+        make_bundle(),
+        artifact_path,
+        overwrite=True,
+    )
+
+    history_rows: list[dict[str, object]] = []
+    history_dates = pd.date_range(
+        TRAINING_END - pd.Timedelta(days=34),
+        TRAINING_END,
+        freq="D",
+    )
+    for date_offset, history_date in enumerate(history_dates):
+        for store_nbr, family, base_sales in [
+            (1, "GROCERY I", 100.0),
+            (2, "BEVERAGES", 200.0),
+        ]:
+            history_rows.append(
+                {
+                    "date": history_date,
+                    "store_nbr": store_nbr,
+                    "family": family,
+                    "sales": base_sales + date_offset,
+                }
+            )
+    saved_history = write_deployment_history(
+        pd.DataFrame(history_rows),
+        TRAINING_END,
+        history_path,
+        overwrite=True,
+    )
+    return saved_artifact, saved_history
+
+
+class PreprocessingContractTests(unittest.TestCase):
+    def test_oil_lookup_uses_only_the_latest_published_value(self) -> None:
+        base_dates = pd.Series([pd.Timestamp("2017-02-01")])
+        oil = pd.DataFrame(
+            {
+                "date": pd.to_datetime(
+                    ["2017-01-15", "2017-01-16", "2017-01-20"]
+                ),
+                "dcoilwtico": [70.0, np.nan, 80.0],
+            }
+        )
+
+        lookup, evidence = build_oil_lookup(base_dates, oil)
+
+        self.assertEqual(lookup.loc[0, "oil_lag_16"], 70.0)
+        self.assertEqual(lookup.loc[0, "oil_lag_16_age_days"], 1.0)
+        self.assertTrue(pd.isna(lookup.loc[0, "oil_lag_21"]))
+        self.assertFalse(evidence["future_actual_values_used"])
+
+    def test_transaction_lookup_keeps_exact_missing_lags(self) -> None:
+        base_store_dates = pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2017-02-01", "2017-02-01"]),
+                "store_nbr": [1, 2],
+            }
+        )
+        transactions = pd.DataFrame(
+            {
+                "date": pd.to_datetime(
+                    ["2017-01-15", "2017-01-16", "2017-01-16"]
+                ),
+                "store_nbr": [1, 1, 2],
+                "transactions": [99, 10, 20],
+            }
+        )
+
+        lookup, evidence = build_transaction_lookup(
+            base_store_dates,
+            transactions,
+        )
+
+        store_1 = lookup.loc[lookup["store_nbr"].eq(1)].iloc[0]
+        store_2 = lookup.loc[lookup["store_nbr"].eq(2)].iloc[0]
+        self.assertEqual(store_1["transactions_lag_16"], 10.0)
+        self.assertEqual(store_2["transactions_lag_16"], 20.0)
+        self.assertTrue(pd.isna(store_1["transactions_lag_21"]))
+        self.assertEqual(store_1["transactions_lag_available_count"], 1)
+        self.assertFalse(evidence["future_actual_values_used"])
+
+    def test_holiday_normalization_preserves_operating_meaning(self) -> None:
+        stores = pd.DataFrame(
+            {
+                "store_nbr": [1],
+                "city": ["Quito"],
+                "state": ["Pichincha"],
+            }
+        )
+        holidays = pd.DataFrame(
+            {
+                "date": pd.to_datetime(
+                    [
+                        "2017-01-01",
+                        "2017-01-02",
+                        "2017-01-03",
+                        "2017-01-04",
+                        "2017-01-05",
+                    ]
+                ),
+                "type": ["Holiday", "Transfer", "Work Day", "Event", "Event"],
+                "locale": ["National"] * 5,
+                "locale_name": ["Ecuador"] * 5,
+                "description": [
+                    "Founding Day",
+                    "Founding Day Transfer",
+                    "Recovery Work Day",
+                    "Dia de la Madre",
+                    "Terremoto Manabi",
+                ],
+                "transferred": [True, False, False, False, False],
+            }
+        )
+
+        normalized, evidence = normalize_holidays(holidays, stores)
+        by_date = normalized.set_index("date")
+
+        transferred_source = by_date.loc[pd.Timestamp("2017-01-01")]
+        transfer_destination = by_date.loc[pd.Timestamp("2017-01-02")]
+        work_day = by_date.loc[pd.Timestamp("2017-01-03")]
+        planned_event = by_date.loc[pd.Timestamp("2017-01-04")]
+        self.assertEqual(transferred_source["is_holiday"], 0)
+        self.assertEqual(transferred_source["is_holiday_transfer_source"], 1)
+        self.assertEqual(transfer_destination["is_holiday"], 1)
+        self.assertEqual(
+            transfer_destination["is_holiday_transfer_destination"],
+            1,
+        )
+        self.assertEqual(work_day["is_special_work_day"], 1)
+        self.assertEqual(planned_event["is_planned_event"], 1)
+        self.assertNotIn(pd.Timestamp("2017-01-05"), by_date.index)
+        self.assertEqual(evidence["earthquake_event_rows_excluded"], 1)
+
+    def test_unknown_event_description_is_rejected(self) -> None:
+        stores = pd.DataFrame(
+            {
+                "store_nbr": [1],
+                "city": ["Quito"],
+                "state": ["Pichincha"],
+            }
+        )
+        holidays = pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2017-01-01"]),
+                "type": ["Event"],
+                "locale": ["National"],
+                "locale_name": ["Ecuador"],
+                "description": ["Unclassified Parade"],
+                "transferred": [False],
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "without an accepted"):
+            normalize_holidays(holidays, stores)
+
+    def test_store_join_and_final_validation_preserve_the_base_rows(self) -> None:
+        base = pd.DataFrame(
+            {
+                "id": [1],
+                "date": pd.to_datetime(["2017-01-01"]),
+                "store_nbr": [1],
+                "family": ["GROCERY I"],
+                "sales": [10.0],
+                "onpromotion": [0],
+            }
+        )
+        stores = pd.DataFrame(
+            {
+                "store_nbr": [1],
+                "city": ["Quito"],
+                "state": ["Pichincha"],
+                "store_type": ["A"],
+                "store_cluster": [1],
+            }
+        )
+
+        joined, evidence = join_store_metadata("train.csv", base, stores)
+        joined["oil_lag_16"] = np.nan
+        validation = validate_final_table(
+            "train",
+            base,
+            joined,
+            has_target=True,
+        )
+
+        self.assertEqual(evidence["input_rows"], evidence["output_rows"])
+        self.assertTrue(evidence["id_order_preserved"])
+        self.assertEqual(validation["unexpected_missing_cells"], 0)
+        broken = joined.copy()
+        broken.loc[0, "city"] = pd.NA
+        with self.assertRaisesRegex(RuntimeError, "unexpected missing"):
+            validate_final_table("train", base, broken, has_target=True)
 
 
 class SalesLagContractTests(unittest.TestCase):
@@ -296,6 +503,19 @@ class ArtifactAndPredictionContractTests(unittest.TestCase):
         bundle["metadata"]["library_versions"]["xgboost"] = "different-version"
 
         with self.assertRaisesRegex(ValueError, "library versions"):
+            validate_forecast_bundle(bundle)
+
+    def test_artifact_without_prediction_interfaces_is_rejected(self) -> None:
+        bundle = make_bundle()
+        bundle["processor"] = object()
+
+        with self.assertRaisesRegex(ValueError, "transform interface"):
+            validate_forecast_bundle(bundle)
+
+        bundle = make_bundle()
+        bundle["model"] = object()
+
+        with self.assertRaisesRegex(ValueError, "predict interface"):
             validate_forecast_bundle(bundle)
 
     def test_same_artifact_and_input_produce_the_same_forecast(self) -> None:
