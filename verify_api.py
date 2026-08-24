@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -25,6 +26,13 @@ DEFAULT_API_URL = "http://127.0.0.1:8000"
 API_KEY_ENV_VAR = "RETAIL_FORECAST_API_KEY"
 API_KEY_HEADER_NAME = "X-API-Key"
 MIN_API_KEY_LENGTH = 32
+FORECAST_OUTPUT_COLUMNS = [
+    "id",
+    "date",
+    "store_nbr",
+    "family",
+    "forecast_sales",
+]
 
 
 def read_api_key() -> str:
@@ -52,11 +60,33 @@ def read_future_records(path: Path) -> tuple[pd.DataFrame, list[dict[str, object
     return future, records
 
 
+def forecast_checksum(forecast: pd.DataFrame) -> str:
+    """Build the same stable digest used by the local demo runtime."""
+    if forecast.columns.tolist() != FORECAST_OUTPUT_COLUMNS:
+        raise ValueError("Forecast output columns differ from the demo contract.")
+    normalized_rows = [
+        [
+            int(row.id),
+            pd.Timestamp(row.date).strftime("%Y-%m-%d"),
+            int(row.store_nbr),
+            str(row.family),
+            format(float(row.forecast_sales), ".12g"),
+        ]
+        for row in forecast.itertuples(index=False)
+    ]
+    serialized = json.dumps(
+        normalized_rows,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
 def verify_forecast_response(
     payload: dict[str, object],
     future: pd.DataFrame,
     expected_batch_path: Path,
-) -> None:
+) -> str:
     """Check response identity, horizon, values, and prior batch equivalence."""
     expected_keys = {
         "model_version",
@@ -73,8 +103,7 @@ def verify_forecast_response(
         raise ValueError("API response row count differs from the request.")
 
     forecast = pd.DataFrame(payload["forecasts"])
-    expected_columns = ["id", "date", "store_nbr", "family", "forecast_sales"]
-    if forecast.columns.tolist() != expected_columns:
+    if forecast.columns.tolist() != FORECAST_OUTPUT_COLUMNS:
         raise ValueError("API forecast rows differ from the output contract.")
     forecast["date"] = pd.to_datetime(forecast["date"])
 
@@ -114,6 +143,7 @@ def verify_forecast_response(
         rtol=1e-6,
         atol=1e-6,
     )
+    return forecast_checksum(forecast)
 
 
 def verify_monitoring_response(
@@ -179,6 +209,13 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=DEFAULT_BATCH_OUTPUT_PATH,
     )
+    parser.add_argument(
+        "--record-demo-verification",
+        action="store_true",
+        help=(
+            "Record the successful batch-parity result in a local demo runtime."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -236,10 +273,34 @@ def main() -> int:
             headers=auth_headers,
         )
         metrics_response.raise_for_status()
+        payload = forecast_response.json()
+        response_checksum = verify_forecast_response(
+            payload,
+            future,
+            args.expected_batch,
+        )
+        verify_monitoring_response(metrics_response.json(), len(future))
 
-    payload = forecast_response.json()
-    verify_forecast_response(payload, future, args.expected_batch)
-    verify_monitoring_response(metrics_response.json(), len(future))
+        if args.record_demo_verification:
+            demo_verification_response = client.post(
+                f"{base_url}/demo/verification",
+                headers=auth_headers,
+                json={
+                    "model_version": payload["model_version"],
+                    "row_count": payload["row_count"],
+                    "forecast_start": payload["forecast_start"],
+                    "forecast_end": payload["forecast_end"],
+                    "forecast_sha256": response_checksum,
+                    "notebook_batch_match": True,
+                },
+            )
+            if demo_verification_response.status_code != 200:
+                raise RuntimeError(
+                    "Demo verification could not be recorded: "
+                    f"HTTP {demo_verification_response.status_code}: "
+                    f"{demo_verification_response.text}"
+                )
+
     print("Live API forecast: PASS")
     print(
         f"Rows: {payload['row_count']:,}; dates: "
@@ -249,6 +310,8 @@ def main() -> int:
     print("Operational monitoring counters: PASS")
     print("Successful, contract-rejected, and schema-rejected batches: PASS")
     print("Protected endpoints reject missing API credentials: PASS")
+    if args.record_demo_verification:
+        print("Local planning view verification: PASS")
     return 0
 
 

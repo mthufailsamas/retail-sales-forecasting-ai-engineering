@@ -17,7 +17,7 @@ COPY requirements.txt ./
 RUN python -m pip install --no-cache-dir --requirement requirements.txt
 
 COPY --chown=retail:retail \
-    app.py store_sales_model.py store_sales_preprocessing.py ./
+    app.py demo.html store_sales_model.py store_sales_preprocessing.py ./
 
 EXPOSE 8000
 

@@ -24,11 +24,14 @@ from app import (
     API_KEY_ENV_VAR,
     API_KEY_HEADER_NAME,
     ARTIFACT_PATH_ENV_VAR,
+    DEMO_FORECAST_STATE,
+    DEMO_MODE_ENV_VAR,
     HISTORY_PATH_ENV_VAR,
     REQUEST_LOGGER,
     SERVICE_METRICS,
     ForecastRuntime,
     app as api_app,
+    forecast_checksum,
     get_runtime,
     load_runtime,
 )
@@ -694,6 +697,7 @@ class ForecastApiContractTests(unittest.TestCase):
         api_app.dependency_overrides[get_runtime] = lambda: runtime
         REQUEST_LOGGER.disabled = True
         SERVICE_METRICS.reset()
+        DEMO_FORECAST_STATE.reset()
         self.client = TestClient(
             api_app,
             headers={API_KEY_HEADER_NAME: TEST_API_KEY},
@@ -701,6 +705,7 @@ class ForecastApiContractTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         api_app.dependency_overrides.clear()
+        DEMO_FORECAST_STATE.reset()
         REQUEST_LOGGER.disabled = False
         self.environment_patch.stop()
 
@@ -719,6 +724,167 @@ class ForecastApiContractTests(unittest.TestCase):
                 "authentication": "configured",
             },
         )
+
+    def test_demo_routes_are_disabled_outside_demo_mode(self) -> None:
+        with patch.dict(os.environ, {DEMO_MODE_ENV_VAR: ""}):
+            page_response = self.client.get("/demo")
+            summary_response = self.client.get("/demo/summary")
+            planning_response = self.client.get("/demo/planning")
+            verification_response = self.client.post(
+                "/demo/verification",
+                json={
+                    "model_version": MODEL_VERSION,
+                    "row_count": 32,
+                    "forecast_start": "2017-08-16",
+                    "forecast_end": "2017-08-31",
+                    "forecast_sha256": "0" * 64,
+                    "notebook_batch_match": True,
+                },
+            )
+
+        self.assertEqual(page_response.status_code, 404)
+        self.assertEqual(summary_response.status_code, 404)
+        self.assertEqual(planning_response.status_code, 404)
+        self.assertEqual(verification_response.status_code, 404)
+
+    def test_demo_page_is_served_only_in_demo_mode(self) -> None:
+        with patch.dict(os.environ, {DEMO_MODE_ENV_VAR: "1"}):
+            response = self.client.get("/demo")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.headers["content-type"].startswith("text/html"))
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        self.assertIn("Retail Sales Forecasting &amp; Planning System", response.text)
+        for field in ["id", "date", "store_nbr", "family", "forecast_sales"]:
+            self.assertIn(f"<code>{field}</code>", response.text)
+        for unsupported_alias in [
+            "forecast_date",
+            "product_family",
+            "predicted_sales",
+        ]:
+            self.assertNotIn(f"<code>{unsupported_alias}</code>", response.text)
+        self.assertIn("actions/workflows/contract-tests.yml", response.text)
+        self.assertNotIn("actions/runs/32442894170", response.text)
+        self.assertNotIn(TEST_API_KEY, response.text)
+        self.assertIn("Planning Workspace", response.text)
+        self.assertIn("AI Engineering Operations", response.text)
+        self.assertIn(
+            'id="planningWorkspace" role="tabpanel"',
+            response.text,
+        )
+        self.assertIn(
+            'id="operationsWorkspace" role="tabpanel" '
+            'aria-labelledby="operationsTab" hidden',
+            response.text,
+        )
+        self.assertNotIn("Business problem", response.text)
+        self.assertNotIn("System workflow", response.text)
+        self.assertNotIn("Model evidence", response.text)
+        self.assertIn("44 + 5", response.text)
+        self.assertIn("/demo/planning", response.text)
+
+    def test_demo_summary_exposes_only_safe_runtime_aggregates(self) -> None:
+        with patch.dict(os.environ, {DEMO_MODE_ENV_VAR: "1"}):
+            response = self.client.get("/demo/summary")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["service"]["status"], "ready")
+        self.assertEqual(body["service"]["model_version"], MODEL_VERSION)
+        self.assertEqual(body["verification"]["status"], "waiting")
+        self.assertEqual(body["verification"]["forecast_rows"], 0)
+        serialized = json.dumps(body)
+        self.assertNotIn(TEST_API_KEY, serialized)
+        self.assertNotIn("forecast_sales", serialized)
+        self.assertNotIn("GROCERY I", serialized)
+
+    def test_demo_summary_reports_a_complete_live_verification(self) -> None:
+        SERVICE_METRICS.record("/forecast", 200, 20.0, 32, "success")
+        SERVICE_METRICS.record("/forecast", 422, 2.0, 0, "schema_rejection")
+        SERVICE_METRICS.record("/forecast", 422, 3.0, 1, "contract_rejection")
+        SERVICE_METRICS.record(
+            "/forecast", 401, 1.0, 0, "authentication_rejection"
+        )
+
+        with patch.dict(os.environ, {DEMO_MODE_ENV_VAR: "1"}):
+            false_positive_response = self.client.get("/demo/summary")
+
+        self.assertEqual(
+            false_positive_response.json()["verification"]["status"],
+            "waiting",
+        )
+        self.assertEqual(
+            false_positive_response.json()["verification"]["forecast_rows"],
+            0,
+        )
+
+        future = make_future_batch()
+        forecast = future[["id", "date", "store_nbr", "family"]].copy()
+        forecast["forecast_sales"] = 25.0
+
+        with (
+            patch("app.VERIFIED_FORECAST_ROWS", len(forecast)),
+            patch.dict(os.environ, {DEMO_MODE_ENV_VAR: "1"}),
+        ):
+            DEMO_FORECAST_STATE.cache_forecast(forecast, MODEL_VERSION)
+            verification_response = self.client.post(
+                "/demo/verification",
+                json={
+                    "model_version": MODEL_VERSION,
+                    "row_count": len(forecast),
+                    "forecast_start": "2017-08-16",
+                    "forecast_end": "2017-08-31",
+                    "forecast_sha256": forecast_checksum(forecast),
+                    "notebook_batch_match": True,
+                },
+            )
+            response = self.client.get("/demo/summary")
+            planning_response = self.client.get(
+                "/demo/planning",
+                params={"store_nbr": 1, "family": "GROCERY I"},
+            )
+            download_response = self.client.get(
+                "/demo/planning.csv",
+                params={"store_nbr": 1, "family": "GROCERY I"},
+            )
+
+        self.assertEqual(verification_response.status_code, 200)
+        self.assertEqual(response.status_code, 200)
+        body = response.json()["verification"]
+        self.assertEqual(body["status"], "passed")
+        self.assertEqual(body["forecast_rows"], len(forecast))
+        self.assertTrue(body["notebook_batch_match"])
+        self.assertEqual(body["successful_batches"], 1)
+        self.assertEqual(body["schema_rejections"], 1)
+        self.assertEqual(body["contract_rejections"], 1)
+        self.assertEqual(body["authentication_rejections"], 1)
+        self.assertEqual(body["model_errors"], 0)
+        self.assertEqual(body["maximum_forecast_latency_ms"], 20.0)
+
+        self.assertEqual(planning_response.status_code, 200)
+        planning = planning_response.json()
+        self.assertEqual(planning["selection"]["store_nbr"], 1)
+        self.assertEqual(planning["selection"]["family"], "GROCERY I")
+        self.assertEqual(planning["summary"]["row_count"], 16)
+        self.assertEqual(len(planning["daily"]), 16)
+        self.assertEqual(len(planning["rows"]), 16)
+        self.assertTrue(
+            all(row["forecast_sales"] == 25.0 for row in planning["rows"])
+        )
+        self.assertEqual(download_response.status_code, 200)
+        self.assertTrue(
+            download_response.headers["content-type"].startswith("text/csv")
+        )
+        self.assertIn("forecast_sales", download_response.text.splitlines()[0])
+
+    def test_demo_routes_do_not_expand_the_public_api_contract(self) -> None:
+        paths = self.client.get("/openapi.json").json()["paths"]
+
+        self.assertNotIn("/demo", paths)
+        self.assertNotIn("/demo/summary", paths)
+        self.assertNotIn("/demo/verification", paths)
+        self.assertNotIn("/demo/planning", paths)
+        self.assertNotIn("/demo/planning.csv", paths)
 
     def test_forecast_and_metrics_require_a_valid_api_key(self) -> None:
         unauthenticated_client = TestClient(api_app)

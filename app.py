@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from functools import lru_cache
+import hashlib
 import json
 import logging
 import os
@@ -16,6 +17,7 @@ from typing import Annotated, Any
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Security, status
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.security import APIKeyHeader
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field
@@ -44,9 +46,19 @@ REQUEST_LOGGER.propagate = False
 API_KEY_ENV_VAR = "RETAIL_FORECAST_API_KEY"
 ARTIFACT_PATH_ENV_VAR = "RETAIL_FORECAST_ARTIFACT_PATH"
 HISTORY_PATH_ENV_VAR = "RETAIL_FORECAST_HISTORY_PATH"
+DEMO_MODE_ENV_VAR = "RETAIL_FORECAST_DEMO_MODE"
 API_KEY_HEADER_NAME = "X-API-Key"
 MIN_API_KEY_LENGTH = 32
 API_KEY_HEADER = APIKeyHeader(name=API_KEY_HEADER_NAME, auto_error=False)
+DEMO_PAGE_PATH = Path(__file__).with_name("demo.html")
+VERIFIED_FORECAST_ROWS = 28_512
+DEMO_FORECAST_COLUMNS = [
+    "id",
+    "date",
+    "store_nbr",
+    "family",
+    "forecast_sales",
+]
 
 
 class ServiceMetrics:
@@ -149,6 +161,191 @@ class ServiceMetrics:
 
 
 SERVICE_METRICS = ServiceMetrics()
+
+
+def forecast_checksum(forecast: pd.DataFrame) -> str:
+    """Build a stable digest for one ordered forecast output table."""
+    if forecast.columns.tolist() != DEMO_FORECAST_COLUMNS:
+        raise ValueError("Forecast output columns differ from the demo contract.")
+
+    normalized_rows = [
+        [
+            int(row.id),
+            pd.Timestamp(row.date).strftime("%Y-%m-%d"),
+            int(row.store_nbr),
+            str(row.family),
+            format(float(row.forecast_sales), ".12g"),
+        ]
+        for row in forecast.itertuples(index=False)
+    ]
+    serialized = json.dumps(
+        normalized_rows,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+class DemoForecastState:
+    """Keep the latest local demo forecast and its parity evidence in memory."""
+
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self.reset()
+
+    def reset(self) -> None:
+        """Clear process-local presentation state."""
+        with self._lock:
+            self._forecast: pd.DataFrame | None = None
+            self._model_version: str | None = None
+            self._checksum: str | None = None
+            self._verification: dict[str, Any] | None = None
+
+    def cache_forecast(
+        self,
+        forecast: pd.DataFrame,
+        model_version: str,
+    ) -> None:
+        """Cache one complete model-backed batch until parity is confirmed."""
+        table = forecast[DEMO_FORECAST_COLUMNS].copy()
+        table["date"] = pd.to_datetime(table["date"])
+        if len(table) != VERIFIED_FORECAST_ROWS:
+            raise RuntimeError(
+                "Demo forecast row count differs from the accepted complete batch."
+            )
+        if table["date"].nunique() != FORECAST_HORIZON_DAYS:
+            raise RuntimeError(
+                "Demo forecast dates differ from the accepted 16-day horizon."
+            )
+
+        checksum = forecast_checksum(table)
+        with self._lock:
+            self._forecast = table.reset_index(drop=True)
+            self._model_version = model_version
+            self._checksum = checksum
+            self._verification = None
+
+    def mark_verified(self, report: "DemoVerificationRequest") -> None:
+        """Accept parity evidence only for the exact cached model response."""
+        with self._lock:
+            if self._forecast is None or self._checksum is None:
+                raise ValueError("No complete demo forecast is available to verify.")
+            expected_start = self._forecast["date"].min().date()
+            expected_end = self._forecast["date"].max().date()
+            checks = {
+                "model version": report.model_version == self._model_version,
+                "row count": report.row_count == len(self._forecast),
+                "forecast start": report.forecast_start == expected_start,
+                "forecast end": report.forecast_end == expected_end,
+                "forecast checksum": report.forecast_sha256 == self._checksum,
+                "notebook batch parity": report.notebook_batch_match,
+            }
+            failed = [name for name, passed in checks.items() if not passed]
+            if failed:
+                raise ValueError(
+                    "Demo verification differs from the cached forecast: "
+                    + ", ".join(failed)
+                    + "."
+                )
+            self._verification = {
+                "status": "passed",
+                "row_count": len(self._forecast),
+                "forecast_start": expected_start,
+                "forecast_end": expected_end,
+                "forecast_sha256": self._checksum,
+                "notebook_batch_match": True,
+                "verified_at_utc": datetime.now(timezone.utc),
+            }
+
+    def verification_snapshot(self) -> dict[str, Any]:
+        """Return evidence metadata without returning forecast values."""
+        with self._lock:
+            if self._verification is None:
+                return {
+                    "status": "waiting",
+                    "row_count": 0,
+                    "forecast_start": None,
+                    "forecast_end": None,
+                    "notebook_batch_match": False,
+                    "verified_at_utc": None,
+                }
+            return dict(self._verification)
+
+    def planning_view(
+        self,
+        store_nbr: int | None,
+        family: str | None,
+    ) -> dict[str, Any]:
+        """Return one verified store-family forecast for the local planning view."""
+        with self._lock:
+            if self._forecast is None or self._verification is None:
+                raise RuntimeError("The verified planning forecast is not ready.")
+            table = self._forecast.copy()
+
+        stores = sorted(int(value) for value in table["store_nbr"].unique())
+        selected_store = stores[0] if store_nbr is None else store_nbr
+        if selected_store not in stores:
+            raise ValueError("The selected store is not part of this forecast batch.")
+
+        store_rows = table.loc[table["store_nbr"] == selected_store]
+        families = sorted(str(value) for value in store_rows["family"].unique())
+        selected_family = families[0] if family is None else family
+        if selected_family not in families:
+            raise ValueError(
+                "The selected product family is not available for this store."
+            )
+
+        selected = store_rows.loc[
+            store_rows["family"] == selected_family
+        ].sort_values(["date", "id"])
+        daily = (
+            selected.groupby("date", as_index=False)["forecast_sales"]
+            .sum()
+            .sort_values("date")
+        )
+        peak_row = daily.loc[daily["forecast_sales"].idxmax()]
+        total_forecast = float(daily["forecast_sales"].sum())
+        rows = [
+            {
+                "id": int(row.id),
+                "date": pd.Timestamp(row.date).date(),
+                "store_nbr": int(row.store_nbr),
+                "family": str(row.family),
+                "forecast_sales": float(row.forecast_sales),
+            }
+            for row in selected.itertuples(index=False)
+        ]
+        return {
+            "options": {
+                "stores": stores,
+                "families": families,
+                "dates": [pd.Timestamp(value).date() for value in daily["date"]],
+            },
+            "selection": {
+                "store_nbr": selected_store,
+                "family": selected_family,
+            },
+            "summary": {
+                "row_count": len(rows),
+                "total_forecast_sales": total_forecast,
+                "average_daily_forecast_sales": (
+                    total_forecast / len(daily) if len(daily) else 0.0
+                ),
+                "peak_date": pd.Timestamp(peak_row["date"]).date(),
+                "peak_forecast_sales": float(peak_row["forecast_sales"]),
+            },
+            "daily": [
+                {
+                    "date": pd.Timestamp(row.date).date(),
+                    "forecast_sales": float(row.forecast_sales),
+                }
+                for row in daily.itertuples(index=False)
+            ],
+            "rows": rows,
+        }
+
+
+DEMO_FORECAST_STATE = DemoForecastState()
 
 
 def write_request_log(
@@ -280,6 +477,19 @@ class ForecastResponse(BaseModel):
     forecasts: list[ForecastItem]
 
 
+class DemoVerificationRequest(BaseModel):
+    """Parity evidence submitted by the local full-batch verifier."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model_version: str = Field(min_length=1)
+    row_count: int = Field(ge=1)
+    forecast_start: date
+    forecast_end: date
+    forecast_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    notebook_batch_match: bool
+
+
 class HealthResponse(BaseModel):
     status: str
     model_version: str
@@ -375,9 +585,19 @@ def require_api_key(
         )
 
 
+def require_demo_mode() -> None:
+    """Keep the presentation surface disabled outside the local demo runtime."""
+    if os.getenv(DEMO_MODE_ENV_VAR) != "1":
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Not found.",
+        )
+
+
 RuntimeDependency = Annotated[ForecastRuntime, Depends(get_runtime)]
 ConfiguredApiKeyDependency = Annotated[str, Depends(get_configured_api_key)]
 AuthenticatedDependency = Annotated[None, Depends(require_api_key)]
+DemoModeDependency = Annotated[None, Depends(require_demo_mode)]
 
 app = FastAPI(
     title="Retail Sales Forecasting API",
@@ -405,6 +625,150 @@ async def log_http_request(request: Request, call_next):
     response.headers["X-Request-ID"] = request_id
     record_completed_request(request, request_id, response.status_code, started_at)
     return response
+
+
+@app.get("/demo", include_in_schema=False)
+def demo_page(_demo_mode: DemoModeDependency) -> FileResponse:
+    """Serve the local interview dashboard without exposing private runtime data."""
+    if not DEMO_PAGE_PATH.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Demo page is not available.",
+        )
+    return FileResponse(
+        DEMO_PAGE_PATH,
+        media_type="text/html",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/demo/summary", include_in_schema=False)
+def demo_summary(
+    _demo_mode: DemoModeDependency,
+    _configured_api_key: ConfiguredApiKeyDependency,
+    runtime: RuntimeDependency,
+) -> dict[str, Any]:
+    """Return only presentation-safe runtime and verification aggregates."""
+    metadata = runtime.bundle["metadata"]
+    snapshot = SERVICE_METRICS.snapshot()
+    forecast_metrics = snapshot["forecast"]
+    forecast_latency = snapshot["latency_ms_by_path"].get("/forecast", {})
+    parity_evidence = DEMO_FORECAST_STATE.verification_snapshot()
+    verification_passed = (
+        parity_evidence["status"] == "passed"
+        and parity_evidence["row_count"] == VERIFIED_FORECAST_ROWS
+        and parity_evidence["notebook_batch_match"]
+        and forecast_metrics["success_total"] >= 1
+        and forecast_metrics["schema_rejections_total"] >= 1
+        and forecast_metrics["contract_rejections_total"] >= 1
+        and forecast_metrics["authentication_rejections_total"] >= 1
+        and forecast_metrics["model_errors_total"] == 0
+    )
+
+    return {
+        "service": {
+            "status": "ready",
+            "model_version": metadata["model_version"],
+            "method": metadata["method"],
+            "training_end": pd.Timestamp(metadata["training_end"]).date(),
+            "forecast_horizon_days": metadata["forecast_horizon_days"],
+        },
+        "verification": {
+            "status": "passed" if verification_passed else "waiting",
+            "forecast_rows": (
+                parity_evidence["row_count"] if verification_passed else 0
+            ),
+            "forecast_start": parity_evidence["forecast_start"],
+            "forecast_end": parity_evidence["forecast_end"],
+            "notebook_batch_match": parity_evidence["notebook_batch_match"],
+            "verified_at_utc": parity_evidence["verified_at_utc"],
+            "successful_batches": forecast_metrics["success_total"],
+            "schema_rejections": forecast_metrics["schema_rejections_total"],
+            "contract_rejections": forecast_metrics["contract_rejections_total"],
+            "authentication_rejections": forecast_metrics[
+                "authentication_rejections_total"
+            ],
+            "model_errors": forecast_metrics["model_errors_total"],
+            "maximum_forecast_latency_ms": forecast_latency.get("maximum_ms"),
+        },
+    }
+
+
+@app.post("/demo/verification", include_in_schema=False)
+def record_demo_verification(
+    report: DemoVerificationRequest,
+    _demo_mode: DemoModeDependency,
+    _authentication: AuthenticatedDependency,
+) -> dict[str, str]:
+    """Record parity evidence for the exact model response cached by the demo."""
+    try:
+        DEMO_FORECAST_STATE.mark_verified(report)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(error),
+        ) from error
+    return {"status": "recorded"}
+
+
+@app.get("/demo/planning", include_in_schema=False)
+def demo_planning(
+    _demo_mode: DemoModeDependency,
+    _configured_api_key: ConfiguredApiKeyDependency,
+    store_nbr: int | None = None,
+    family: str | None = None,
+) -> dict[str, Any]:
+    """Return a verified store-family planning slice for the local dashboard."""
+    try:
+        return DEMO_FORECAST_STATE.planning_view(store_nbr, family)
+    except RuntimeError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(error),
+        ) from error
+
+
+@app.get("/demo/planning.csv", include_in_schema=False)
+def download_demo_planning(
+    _demo_mode: DemoModeDependency,
+    _configured_api_key: ConfiguredApiKeyDependency,
+    store_nbr: int | None = None,
+    family: str | None = None,
+) -> StreamingResponse:
+    """Download the selected verified planning slice as a local CSV file."""
+    try:
+        planning = DEMO_FORECAST_STATE.planning_view(store_nbr, family)
+    except RuntimeError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(error),
+        ) from error
+
+    csv_text = pd.DataFrame(planning["rows"])[DEMO_FORECAST_COLUMNS].to_csv(
+        index=False,
+        lineterminator="\n",
+    )
+    selected_store = planning["selection"]["store_nbr"]
+    return StreamingResponse(
+        iter([csv_text]),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": (
+                "attachment; filename="
+                f'"retail_forecast_store_{selected_store}.csv"'
+            )
+        },
+    )
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -461,6 +825,13 @@ def forecast(
             detail="Forecast generation failed.",
         ) from error
 
+    metadata = runtime.bundle["metadata"]
+    if os.getenv(DEMO_MODE_ENV_VAR) == "1":
+        DEMO_FORECAST_STATE.cache_forecast(
+            result[DEMO_FORECAST_COLUMNS],
+            metadata["model_version"],
+        )
+
     forecasts = [
         ForecastItem(
             id=int(row.id),
@@ -471,7 +842,6 @@ def forecast(
         )
         for row in result.itertuples(index=False)
     ]
-    metadata = runtime.bundle["metadata"]
     http_request.state.forecast_outcome = "success"
     return ForecastResponse(
         model_version=metadata["model_version"],

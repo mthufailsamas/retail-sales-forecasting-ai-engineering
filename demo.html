@@ -1,0 +1,527 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Role-based local demo for retail demand planning and AI engineering operations">
+  <title>Retail Sales Forecasting &amp; Planning System</title>
+  <style>
+    :root {
+      --ink: #15211f;
+      --muted: #65736f;
+      --paper: #f2f0e9;
+      --surface: #fffdf8;
+      --soft: #ebece5;
+      --line: #d6d8d0;
+      --navy: #102725;
+      --navy-soft: #183632;
+      --green: #087a62;
+      --green-bright: #79d9b3;
+      --green-soft: #dff2e8;
+      --amber: #a86d18;
+      --amber-soft: #faedcf;
+      --shadow: 0 24px 68px rgba(16, 39, 37, 0.12);
+      --radius: 20px;
+    }
+
+    * { box-sizing: border-box; }
+    html { min-width: 320px; background: var(--paper); }
+    body {
+      min-height: 100vh;
+      margin: 0;
+      color: var(--ink);
+      background: radial-gradient(circle at 82% 0%, rgba(121, 217, 179, 0.11), transparent 28%), var(--paper);
+      font-family: "Segoe UI", Inter, Arial, sans-serif;
+      line-height: 1.5;
+    }
+    button, select, a { font: inherit; }
+    button, a { -webkit-tap-highlight-color: transparent; }
+    button:focus-visible, select:focus-visible, a:focus-visible {
+      outline: 3px solid rgba(8, 122, 98, 0.25);
+      outline-offset: 2px;
+    }
+    h1, h2, h3, p { margin-top: 0; }
+    .shell { width: min(1480px, calc(100% - 48px)); margin: 0 auto; }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      color: #fff;
+      background: rgba(16, 39, 37, 0.96);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      backdrop-filter: blur(18px);
+    }
+    .topbar-inner {
+      min-height: 72px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+    }
+    .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .brand-mark {
+      width: 38px;
+      height: 38px;
+      flex: 0 0 auto;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(121, 217, 179, 0.55);
+      border-radius: 12px;
+      color: var(--green-bright);
+      font-size: 12px;
+      font-weight: 850;
+    }
+    .brand-copy { min-width: 0; }
+    .brand-copy strong, .brand-copy span { display: block; }
+    .brand-copy strong { overflow: hidden; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+    .brand-copy span { color: rgba(255, 255, 255, 0.52); font-size: 10px; letter-spacing: 0.07em; text-transform: uppercase; }
+    .runtime-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      padding: 9px 13px;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 999px;
+      color: rgba(255, 255, 255, 0.72);
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+    }
+    .runtime-dot { width: 8px; height: 8px; border-radius: 50%; background: #e2b663; box-shadow: 0 0 0 5px rgba(226, 182, 99, 0.12); }
+    .runtime-pill.is-ready .runtime-dot { background: var(--green-bright); box-shadow: 0 0 0 5px rgba(121, 217, 179, 0.13); }
+
+    .rolebar { background: var(--surface); border-bottom: 1px solid var(--line); }
+    .role-tabs { min-height: 64px; display: flex; align-items: stretch; gap: 8px; }
+    .role-tab {
+      position: relative;
+      border: 0;
+      padding: 0 20px;
+      color: var(--muted);
+      background: transparent;
+      font-size: 13px;
+      font-weight: 750;
+      cursor: pointer;
+    }
+    .role-tab::after { content: ""; position: absolute; right: 20px; bottom: 0; left: 20px; height: 3px; border-radius: 999px 999px 0 0; }
+    .role-tab.is-active { color: var(--green); }
+    .role-tab.is-active::after { background: var(--green); }
+
+    main { padding: 54px 0 72px; }
+    .workspace[hidden] { display: none; }
+    .workspace-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 32px; margin-bottom: 30px; }
+    .workspace-title { max-width: 850px; }
+    .eyebrow { margin: 0 0 10px; color: var(--green); font-size: 11px; font-weight: 850; letter-spacing: 0.1em; text-transform: uppercase; }
+    h1 { margin-bottom: 12px; font-family: Georgia, "Times New Roman", serif; font-size: clamp(38px, 4.2vw, 66px); font-weight: 500; line-height: 1.03; letter-spacing: -0.045em; }
+    .workspace-lead { max-width: 720px; margin-bottom: 0; color: var(--muted); font-size: 15px; }
+    .button {
+      min-height: 44px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      border: 1px solid transparent;
+      border-radius: 10px;
+      padding: 0 16px;
+      color: #fff;
+      background: var(--green);
+      font-size: 12px;
+      font-weight: 800;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .button-secondary { color: #31504a; border-color: var(--line); background: var(--surface); }
+    .button[aria-disabled="true"] { pointer-events: none; opacity: 0.48; }
+
+    .status-strip {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      margin-bottom: 18px;
+      padding: 15px 18px;
+      border: 1px solid #c6ddd3;
+      border-radius: 14px;
+      color: #28574d;
+      background: var(--green-soft);
+      font-size: 12px;
+    }
+    .status-strip.is-waiting { color: #77531b; border-color: #ead8ad; background: var(--amber-soft); }
+    .status-copy { display: flex; align-items: center; gap: 10px; }
+    .status-icon { width: 22px; height: 22px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 50%; color: #fff; background: var(--green); font-size: 11px; font-weight: 900; }
+    .status-strip.is-waiting .status-icon { background: var(--amber); }
+    .status-meta { color: inherit; font-size: 10px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase; white-space: nowrap; }
+
+    .filter-panel {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+      gap: 14px;
+      align-items: end;
+      margin-bottom: 18px;
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+    }
+    .filter-field { display: grid; gap: 7px; }
+    .filter-field label { color: var(--muted); font-size: 9px; font-weight: 850; letter-spacing: 0.08em; text-transform: uppercase; }
+    .filter-field select { width: 100%; min-height: 44px; border: 1px solid #c8ccc3; border-radius: 10px; padding: 0 36px 0 12px; color: var(--ink); background: #fff; font-size: 12px; }
+    .filter-field select:disabled { color: #89938f; cursor: wait; }
+
+    .kpi-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-bottom: 18px; }
+    .kpi-card { min-height: 122px; padding: 20px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); }
+    .kpi-card span, .metric-card span { display: block; color: var(--muted); font-size: 9px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; }
+    .kpi-card strong { display: block; margin: 14px 0 4px; font-family: Georgia, "Times New Roman", serif; font-size: 30px; font-weight: 500; letter-spacing: -0.035em; font-variant-numeric: tabular-nums; }
+    .kpi-card small { color: #82908c; font-size: 10px; }
+
+    .planning-grid { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(300px, 0.55fr); gap: 18px; margin-bottom: 18px; }
+    .card { min-width: 0; padding: 24px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+    .card-dark { color: #fff; border-color: transparent; background: linear-gradient(145deg, var(--navy-soft), var(--navy)); box-shadow: var(--shadow); }
+    .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 20px; }
+    .card-head h2, .card-head h3 { margin-bottom: 4px; font-size: 18px; letter-spacing: -0.02em; }
+    .card-head p { margin-bottom: 0; color: var(--muted); font-size: 10px; }
+    .card-dark .card-head p { color: rgba(255, 255, 255, 0.52); }
+    .forecast-chart { display: block; width: 100%; height: 320px; border-radius: 12px; background: #faf9f4; }
+    .scope-list { display: grid; gap: 0; margin: 0; }
+    .scope-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 16px 0; border-top: 1px solid rgba(255, 255, 255, 0.1); font-size: 11px; }
+    .scope-row dt { color: rgba(255, 255, 255, 0.5); }
+    .scope-row dd { max-width: 62%; margin: 0; font-weight: 750; text-align: right; overflow-wrap: anywhere; }
+
+    .table-card { padding: 0; overflow: hidden; }
+    .table-card .card-head { margin: 0; padding: 22px 24px 18px; }
+    .table-wrap { max-height: 410px; overflow: auto; border-top: 1px solid var(--line); }
+    table { width: 100%; border-collapse: collapse; font-size: 11px; }
+    th, td { padding: 12px 16px; border-bottom: 1px solid #e5e6df; text-align: left; white-space: nowrap; }
+    th { position: sticky; top: 0; z-index: 1; color: #3b554f; background: #ecefe8; font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; }
+    td:last-child, th:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+
+    .operations-grid { display: grid; grid-template-columns: minmax(300px, 0.74fr) minmax(0, 1.26fr); gap: 18px; }
+    .service-panel { padding: 26px; }
+    .service-status { display: flex; align-items: center; gap: 12px; margin-bottom: 26px; }
+    .service-status-mark { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 13px; color: #0e352d; background: var(--green-bright); font-weight: 900; }
+    .service-status strong, .service-status span { display: block; }
+    .service-status strong { font-size: 18px; }
+    .service-status span { color: rgba(255, 255, 255, 0.5); font-size: 10px; }
+    .service-detail { display: flex; justify-content: space-between; gap: 18px; padding: 15px 0; border-top: 1px solid rgba(255, 255, 255, 0.1); color: rgba(255, 255, 255, 0.52); font-size: 11px; }
+    .service-detail strong { max-width: 60%; color: #fff; text-align: right; }
+    .operations-stack { display: grid; gap: 18px; }
+    .metric-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .metric-card { min-height: 108px; padding: 17px; border-radius: 14px; background: var(--soft); }
+    .metric-card strong { display: block; margin: 11px 0 3px; font-size: 22px; letter-spacing: -0.035em; font-variant-numeric: tabular-nums; }
+    .metric-card small { color: #81908b; font-size: 9px; }
+    .contract-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin-bottom: 18px; }
+    .contract-field { padding: 13px 10px; border: 1px solid var(--line); border-radius: 10px; color: #2e554b; background: #f8f7f1; text-align: center; }
+    .contract-field code { font-family: Consolas, monospace; font-size: 10px; font-weight: 750; }
+    .evidence-links { display: flex; flex-wrap: wrap; gap: 9px; }
+    .evidence-link { min-height: 40px; display: inline-flex; align-items: center; padding: 0 13px; border: 1px solid var(--line); border-radius: 9px; color: #36504a; background: #faf8f2; font-size: 10px; font-weight: 750; text-decoration: none; }
+    .footer { padding: 26px 0 34px; color: var(--muted); font-size: 10px; text-align: center; }
+
+    @media (max-width: 1080px) {
+      .planning-grid, .operations-grid { grid-template-columns: 1fr; }
+      .filter-panel { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 760px) {
+      .shell { width: min(100% - 28px, 1480px); }
+      .brand-copy span, .runtime-pill span:last-child { display: none; }
+      .role-tabs { min-height: 58px; }
+      .role-tab { flex: 1 1 50%; padding-inline: 8px; font-size: 11px; }
+      .role-tab::after { right: 10px; left: 10px; }
+      main { padding-top: 38px; }
+      .workspace-head, .status-strip { align-items: flex-start; flex-direction: column; }
+      .filter-panel, .kpi-grid, .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .contract-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 480px) {
+      .filter-panel, .kpi-grid, .metric-grid, .contract-grid { grid-template-columns: 1fr; }
+      .forecast-chart { height: 260px; }
+      .card, .service-panel { padding: 20px; }
+      .table-card { padding: 0; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="shell topbar-inner">
+      <div class="brand">
+        <div class="brand-mark">RF</div>
+        <div class="brand-copy"><strong>Retail Forecast Command Center</strong><span>Store Sales Forecasting &amp; Planning System</span></div>
+      </div>
+      <div class="runtime-pill" id="runtimePill"><span class="runtime-dot"></span><span id="runtimePillText">Checking service</span></div>
+    </div>
+  </header>
+
+  <nav class="rolebar" aria-label="Demo roles">
+    <div class="shell role-tabs" role="tablist">
+      <button class="role-tab is-active" id="planningTab" type="button" role="tab" aria-selected="true" aria-controls="planningWorkspace" data-workspace="planningWorkspace">Planning Workspace</button>
+      <button class="role-tab" id="operationsTab" type="button" role="tab" aria-selected="false" aria-controls="operationsWorkspace" data-workspace="operationsWorkspace">AI Engineering Operations</button>
+    </div>
+  </nav>
+
+  <main>
+    <section class="workspace" id="planningWorkspace" role="tabpanel" aria-labelledby="planningTab">
+      <div class="shell">
+        <div class="workspace-head">
+          <div class="workspace-title"><p class="eyebrow">Demand Planner</p><h1>Plan the next 16 days by store and product family.</h1><p class="workspace-lead">Review the verified forecast, narrow the planning scope, and export the selected series for the next planning cycle.</p></div>
+        </div>
+
+        <div class="status-strip is-waiting" id="planningStatus" aria-live="polite">
+          <div class="status-copy"><span class="status-icon" id="planningStatusIcon">…</span><span id="planningStatusText">Waiting for the complete verified forecast batch.</span></div>
+          <span class="status-meta" id="planningStatusMeta">Verification pending</span>
+        </div>
+
+        <div class="filter-panel" aria-label="Planning controls">
+          <div class="filter-field"><label for="storeFilter">Store</label><select id="storeFilter" disabled><option>Waiting for forecast</option></select></div>
+          <div class="filter-field"><label for="familyFilter">Product family</label><select id="familyFilter" disabled><option>Waiting for forecast</option></select></div>
+          <div class="filter-field"><label for="dateFilter">Table date</label><select id="dateFilter" disabled><option value="">All 16 days</option></select></div>
+          <a class="button" id="downloadForecast" href="#" aria-disabled="true">Download CSV</a>
+        </div>
+
+        <div class="kpi-grid" aria-label="Selected forecast summary">
+          <article class="kpi-card"><span>16-day forecast total</span><strong id="planningTotal">—</strong><small>forecast sales</small></article>
+          <article class="kpi-card"><span>Average per day</span><strong id="planningAverage">—</strong><small>forecast sales</small></article>
+          <article class="kpi-card"><span>Peak forecast date</span><strong id="planningPeakDate">—</strong><small id="planningPeakDateHint">within the selected horizon</small></article>
+          <article class="kpi-card"><span>Peak daily forecast</span><strong id="planningPeakSales">—</strong><small>forecast sales</small></article>
+        </div>
+
+        <div class="planning-grid">
+          <article class="card">
+            <div class="card-head"><div><h2>Daily forecast</h2><p id="chartContext">Select a store and product family.</p></div></div>
+            <canvas class="forecast-chart" id="forecastChart" role="img" aria-label="Daily retail sales forecast chart"></canvas>
+          </article>
+          <aside class="card card-dark">
+            <div class="card-head"><div><h2>Selected planning scope</h2><p>One complete store-family series.</p></div></div>
+            <dl class="scope-list">
+              <div class="scope-row"><dt>Store</dt><dd id="scopeStore">—</dd></div>
+              <div class="scope-row"><dt>Product family</dt><dd id="scopeFamily">—</dd></div>
+              <div class="scope-row"><dt>Forecast period</dt><dd id="scopePeriod">—</dd></div>
+              <div class="scope-row"><dt>Forecast rows</dt><dd id="scopeRows">—</dd></div>
+              <div class="scope-row"><dt>Source</dt><dd>Verified model batch</dd></div>
+            </dl>
+          </aside>
+        </div>
+
+        <article class="card table-card">
+          <div class="card-head"><div><h2>Planning table</h2><p id="tableContext">The selected 16-day planning slice.</p></div></div>
+          <div class="table-wrap"><table><thead><tr><th>Date</th><th>Store</th><th>Product family</th><th>Forecast sales</th></tr></thead><tbody id="forecastTableBody"><tr><td colspan="4">Waiting for verified forecast data.</td></tr></tbody></table></div>
+        </article>
+      </div>
+    </section>
+
+    <section class="workspace" id="operationsWorkspace" role="tabpanel" aria-labelledby="operationsTab" hidden>
+      <div class="shell">
+        <div class="workspace-head">
+          <div class="workspace-title"><p class="eyebrow">AI Engineering Operations</p><h1>Verify the model service before planning begins.</h1><p class="workspace-lead">Inspect the loaded artifact, full-batch parity, request outcomes, latency, and delivery contracts from the running container.</p></div>
+          <button class="button button-secondary" id="refreshButton" type="button">Refresh runtime</button>
+        </div>
+
+        <div class="operations-grid">
+          <aside class="card card-dark service-panel">
+            <div class="service-status"><div class="service-status-mark" id="serviceStatusMark">…</div><div><strong id="serviceStatus">Checking</strong><span>Inference service</span></div></div>
+            <div class="service-detail"><span>Model version</span><strong id="modelVersion">—</strong></div>
+            <div class="service-detail"><span>Method</span><strong id="modelMethod">—</strong></div>
+            <div class="service-detail"><span>Training cutoff</span><strong id="trainingEnd">—</strong></div>
+            <div class="service-detail"><span>Forecast horizon</span><strong id="forecastHorizon">—</strong></div>
+            <div class="service-detail"><span>Runtime</span><strong>Docker · non-root</strong></div>
+          </aside>
+
+          <div class="operations-stack">
+            <article class="card">
+              <div class="card-head"><div><h2>Live verification</h2><p id="verificationContext">Current-process evidence from the local runtime.</p></div><span class="status-meta" id="verificationState">Waiting</span></div>
+              <div class="metric-grid">
+                <div class="metric-card"><span>Verified rows</span><strong id="verifiedRows">0</strong><small id="verifiedPeriod">batch parity pending</small></div>
+                <div class="metric-card"><span>Successful batches</span><strong id="successfulBatches">0</strong><small>complete forecast requests</small></div>
+                <div class="metric-card"><span>Rejected scenarios</span><strong id="rejectedScenarios">0</strong><small>schema, contract, and authentication</small></div>
+                <div class="metric-card"><span>Model errors</span><strong id="modelErrors">0</strong><small>current process</small></div>
+                <div class="metric-card"><span>Maximum latency</span><strong id="forecastLatency">—</strong><small>observed forecast request</small></div>
+                <div class="metric-card"><span>Automated checks</span><strong>44 + 5</strong><small>core contract tests + demo checks</small></div>
+              </div>
+            </article>
+
+            <article class="card">
+              <div class="card-head"><div><h2>Forecast output contract</h2><p>The same fields are preserved through batch and API delivery.</p></div></div>
+              <div class="contract-grid" aria-label="Forecast output fields">
+                <div class="contract-field"><code>id</code></div><div class="contract-field"><code>date</code></div><div class="contract-field"><code>store_nbr</code></div><div class="contract-field"><code>family</code></div><div class="contract-field"><code>forecast_sales</code></div>
+              </div>
+              <div class="evidence-links">
+                <a class="evidence-link" href="/docs" target="_blank" rel="noreferrer">API contract ↗</a>
+                <a class="evidence-link" href="https://github.com/mthufailsamas/retail-sales-forecasting-ai-engineering" target="_blank" rel="noreferrer">Source repository ↗</a>
+                <a class="evidence-link" href="https://github.com/mthufailsamas/retail-sales-forecasting-ai-engineering/actions/workflows/contract-tests.yml" target="_blank" rel="noreferrer">CI workflow ↗</a>
+              </div>
+            </article>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer"><div class="shell">Retail Sales Forecasting &amp; Planning System · Local interview runtime</div></footer>
+
+  <script>
+    const byId = (id) => document.getElementById(id);
+    let currentPlanning = null;
+    let planningLoaded = false;
+
+    const formatInteger = (value) => Number(value || 0).toLocaleString("en-US");
+    const formatForecast = (value) => Number(value || 0).toLocaleString("en-US", { maximumFractionDigits: 2 });
+    const formatLatency = (value) => value === null || value === undefined ? "—" : value >= 1000 ? `${(value / 1000).toFixed(2)} s` : `${Number(value).toFixed(1)} ms`;
+    function formatDate(value, includeYear = true) {
+      const options = { month: "short", day: "numeric" };
+      if (includeYear) options.year = "numeric";
+      return new Date(`${value}T00:00:00`).toLocaleDateString("en-US", options);
+    }
+
+    function setRuntimeState(isReady, label) {
+      byId("runtimePill").classList.toggle("is-ready", isReady);
+      byId("runtimePillText").textContent = label;
+    }
+    function activateWorkspace(workspaceId) {
+      document.querySelectorAll(".workspace").forEach((workspace) => { workspace.hidden = workspace.id !== workspaceId; });
+      document.querySelectorAll(".role-tab").forEach((tab) => {
+        const active = tab.dataset.workspace === workspaceId;
+        tab.classList.toggle("is-active", active);
+        tab.setAttribute("aria-selected", String(active));
+      });
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+    function setPlanningStatus(message, meta, passed) {
+      byId("planningStatusText").textContent = message;
+      byId("planningStatusMeta").textContent = meta;
+      byId("planningStatusIcon").textContent = passed ? "✓" : "…";
+      byId("planningStatus").classList.toggle("is-waiting", !passed);
+    }
+    function setSelectOptions(select, values, selected, labeler) {
+      select.replaceChildren();
+      values.forEach((value) => {
+        const option = document.createElement("option");
+        option.value = String(value);
+        option.textContent = labeler(value);
+        option.selected = String(value) === String(selected);
+        select.appendChild(option);
+      });
+      select.disabled = false;
+    }
+
+    function drawForecastChart() {
+      if (!currentPlanning || !currentPlanning.daily.length) return;
+      const canvas = byId("forecastChart");
+      const daily = currentPlanning.daily;
+      const ratio = window.devicePixelRatio || 1;
+      const width = Math.max(canvas.clientWidth, 320);
+      const height = canvas.clientHeight;
+      canvas.width = Math.round(width * ratio);
+      canvas.height = Math.round(height * ratio);
+      const context = canvas.getContext("2d");
+      context.setTransform(ratio, 0, 0, ratio, 0, 0);
+      context.clearRect(0, 0, width, height);
+      const margin = { top: 24, right: 22, bottom: 46, left: 68 };
+      const plotWidth = width - margin.left - margin.right;
+      const plotHeight = height - margin.top - margin.bottom;
+      const maximum = Math.max(...daily.map((row) => Number(row.forecast_sales)), 1);
+      const yMaximum = maximum * 1.12;
+      const xFor = (index) => margin.left + (index / Math.max(daily.length - 1, 1)) * plotWidth;
+      const yFor = (value) => margin.top + plotHeight - (Number(value) / yMaximum) * plotHeight;
+      context.font = '10px "Segoe UI", Arial, sans-serif';
+      context.textBaseline = "middle";
+      for (let step = 0; step <= 4; step += 1) {
+        const value = (yMaximum / 4) * step;
+        const y = yFor(value);
+        context.beginPath(); context.strokeStyle = "#dfe1da"; context.lineWidth = 1; context.moveTo(margin.left, y); context.lineTo(width - margin.right, y); context.stroke();
+        context.fillStyle = "#687771"; context.textAlign = "right"; context.fillText(formatForecast(value), margin.left - 10, y);
+      }
+      context.beginPath();
+      daily.forEach((row, index) => { const x = xFor(index); const y = yFor(row.forecast_sales); if (index === 0) context.moveTo(x, y); else context.lineTo(x, y); });
+      context.strokeStyle = "#087a62"; context.lineWidth = 4; context.lineJoin = "round"; context.lineCap = "round"; context.stroke();
+      daily.forEach((row, index) => {
+        const x = xFor(index); const y = yFor(row.forecast_sales);
+        context.beginPath(); context.fillStyle = "#fffdf8"; context.strokeStyle = "#087a62"; context.lineWidth = 3; context.arc(x, y, 4.5, 0, Math.PI * 2); context.fill(); context.stroke();
+        if (index % 3 === 0 || index === daily.length - 1) { context.fillStyle = "#687771"; context.textAlign = "center"; context.fillText(formatDate(row.date, false), x, height - 18); }
+      });
+    }
+
+    function renderForecastTable() {
+      if (!currentPlanning) return;
+      const selectedDate = byId("dateFilter").value;
+      const rows = selectedDate ? currentPlanning.rows.filter((row) => row.date === selectedDate) : currentPlanning.rows;
+      const body = byId("forecastTableBody");
+      body.replaceChildren();
+      rows.forEach((row) => {
+        const tableRow = document.createElement("tr");
+        [formatDate(row.date), row.store_nbr, row.family, formatForecast(row.forecast_sales)].forEach((value) => { const cell = document.createElement("td"); cell.textContent = value; tableRow.appendChild(cell); });
+        body.appendChild(tableRow);
+      });
+      byId("tableContext").textContent = selectedDate ? `1 forecast row for ${formatDate(selectedDate)}.` : `${rows.length} forecast rows across the complete horizon.`;
+    }
+
+    function renderPlanning(data) {
+      currentPlanning = data;
+      setSelectOptions(byId("storeFilter"), data.options.stores, data.selection.store_nbr, (value) => `Store ${value}`);
+      setSelectOptions(byId("familyFilter"), data.options.families, data.selection.family, (value) => value);
+      const dateFilter = byId("dateFilter");
+      const previousDate = dateFilter.value;
+      dateFilter.replaceChildren();
+      const allDates = document.createElement("option"); allDates.value = ""; allDates.textContent = "All 16 days"; dateFilter.appendChild(allDates);
+      data.options.dates.forEach((value) => { const option = document.createElement("option"); option.value = value; option.textContent = formatDate(value); option.selected = value === previousDate; dateFilter.appendChild(option); });
+      dateFilter.disabled = false;
+      byId("planningTotal").textContent = formatForecast(data.summary.total_forecast_sales);
+      byId("planningAverage").textContent = formatForecast(data.summary.average_daily_forecast_sales);
+      byId("planningPeakDate").textContent = formatDate(data.summary.peak_date, false);
+      byId("planningPeakDateHint").textContent = formatDate(data.summary.peak_date);
+      byId("planningPeakSales").textContent = formatForecast(data.summary.peak_forecast_sales);
+      byId("chartContext").textContent = `Store ${data.selection.store_nbr} · ${data.selection.family}`;
+      byId("scopeStore").textContent = `Store ${data.selection.store_nbr}`;
+      byId("scopeFamily").textContent = data.selection.family;
+      byId("scopePeriod").textContent = `${formatDate(data.options.dates[0])} – ${formatDate(data.options.dates.at(-1))}`;
+      byId("scopeRows").textContent = formatInteger(data.summary.row_count);
+      renderForecastTable();
+      drawForecastChart();
+      const query = new URLSearchParams({ store_nbr: data.selection.store_nbr, family: data.selection.family });
+      const download = byId("downloadForecast"); download.href = `/demo/planning.csv?${query.toString()}`; download.setAttribute("aria-disabled", "false");
+      setPlanningStatus(`Verified model output ready for Store ${data.selection.store_nbr} and ${data.selection.family}.`, `${data.summary.row_count} rows · 16 days`, true);
+      planningLoaded = true;
+    }
+
+    async function refreshPlanning(storeNbr = null, family = null) {
+      const query = new URLSearchParams();
+      if (storeNbr !== null) query.set("store_nbr", storeNbr);
+      if (family !== null) query.set("family", family);
+      setPlanningStatus("Loading the verified planning slice...", "Please wait", false);
+      try {
+        const suffix = query.toString() ? `?${query.toString()}` : "";
+        const response = await fetch(`/demo/planning${suffix}`, { cache: "no-store" });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        renderPlanning(await response.json());
+      } catch (error) {
+        planningLoaded = false;
+        setPlanningStatus("Planning output is waiting for the complete live batch verification.", "Verification pending", false);
+      }
+    }
+
+    async function refreshSummary() {
+      byId("refreshButton").disabled = true;
+      try {
+        const response = await fetch("/demo/summary", { cache: "no-store" });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json(); const service = data.service; const verification = data.verification; const passed = verification.status === "passed";
+        setRuntimeState(service.status === "ready", "Service ready");
+        byId("serviceStatus").textContent = service.status; byId("serviceStatusMark").textContent = service.status === "ready" ? "✓" : "…";
+        byId("modelVersion").textContent = service.model_version; byId("modelMethod").textContent = service.method; byId("trainingEnd").textContent = service.training_end; byId("forecastHorizon").textContent = `${service.forecast_horizon_days} days`;
+        byId("verificationState").textContent = passed ? "Passed" : "Waiting"; byId("verifiedRows").textContent = formatInteger(verification.forecast_rows); byId("verifiedPeriod").textContent = passed ? `${verification.forecast_start} to ${verification.forecast_end}` : "batch parity pending";
+        byId("successfulBatches").textContent = formatInteger(verification.successful_batches); byId("rejectedScenarios").textContent = formatInteger(verification.schema_rejections + verification.contract_rejections + verification.authentication_rejections); byId("modelErrors").textContent = formatInteger(verification.model_errors); byId("forecastLatency").textContent = formatLatency(verification.maximum_forecast_latency_ms);
+        byId("verificationContext").textContent = passed ? "The exact full response matches the accepted notebook batch." : "Current-process evidence from the local runtime.";
+        if (passed && !planningLoaded) await refreshPlanning();
+      } catch (error) {
+        setRuntimeState(false, "Runtime unavailable"); byId("serviceStatus").textContent = "Unavailable"; byId("serviceStatusMark").textContent = "!"; setPlanningStatus("The local forecast service is unavailable.", "Runtime unavailable", false);
+      } finally { byId("refreshButton").disabled = false; }
+    }
+
+    document.querySelectorAll(".role-tab").forEach((tab) => tab.addEventListener("click", () => activateWorkspace(tab.dataset.workspace)));
+    byId("refreshButton").addEventListener("click", refreshSummary);
+    byId("storeFilter").addEventListener("change", (event) => refreshPlanning(event.target.value, byId("familyFilter").value));
+    byId("familyFilter").addEventListener("change", (event) => refreshPlanning(byId("storeFilter").value, event.target.value));
+    byId("dateFilter").addEventListener("change", renderForecastTable);
+    window.addEventListener("resize", () => window.requestAnimationFrame(drawForecastChart));
+    refreshSummary();
+  </script>
+</body>
+</html>
