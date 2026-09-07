@@ -11,16 +11,16 @@ store-and-product-family level.
 [![License: MIT](https://img.shields.io/badge/License-MIT-2E8B57.svg)](LICENSE)
 
 This project forecasts 16 days of sales for every store and product family in
-Corporacion Favorita's grocery data. The output gives planning teams one
+Corporacion Favorita's grocery data. The output gives planning teams a
 consistent view of expected category demand before the next cycle begins.
 
 ## At a glance
 
 | | Summary |
 |---|---|
-| **Problem** | One overall average cannot represent demand across 54 stores, 33 product families, promotions, holidays, and local operating conditions. |
+| **Problem** | A single overall average cannot represent demand across 54 stores, 33 product families, promotions, holidays, and local operating conditions. |
 | **Solution** | A multi-source feature pipeline compares Ridge and XGBoost chronologically, then packages the selected model for batch and API inference. |
-| **Verified result** | The system generated 28,512 store-family forecasts with 15.6431% internal-test WAPE and 0.7623% signed bias; all 63 core contract tests passed locally and in GitHub Actions, and local API and Docker predictions matched the notebook batch exactly. |
+| **Verified result** | The system generated 28,512 store-family forecasts with 15.6431% internal-test WAPE and 0.7623% signed bias; all 74 core contract tests passed locally and in GitHub Actions, and local API and Docker predictions matched the notebook batch exactly. |
 
 Demand moves differently across stores, product families, promotions, weekly
 patterns, and local events. The system handles that variation at the
@@ -31,11 +31,11 @@ per run.
 
 ```mermaid
 flowchart LR
-    A["Six modeling inputs + submission schema"] --> B["Validated preprocessing"]
+    A["6 modeling inputs + submission schema"] --> B["Validated preprocessing"]
     B --> C["Training-only EDA"]
     C --> D["Cutoff-aligned feature engineering"]
     D --> E["Chronological model comparison"]
-    E --> L["Four-origin historical evaluator"]
+    E --> L["4-fold candidate selection"]
     E --> F["Versioned XGBoost artifact"]
     F --> G["Authenticated FastAPI batch inference"]
     G --> H["Docker container"]
@@ -46,10 +46,10 @@ flowchart LR
 
 ## Verified results
 
-The executed local workflow processed 3,000,888 labeled rows and 28,512 Kaggle
+The accepted V1 workflow processed 3,000,888 labeled rows and 28,512 Kaggle
 inference rows across 54 stores, 33 product families, and 1,782 store-family
 series. It applied the same 16-day information cutoff to sales, transactions,
-and oil, then evaluated three Ridge and 27 XGBoost configurations on the fixed
+and oil, then evaluated 3 Ridge and 27 XGBoost configurations on the fixed
 validation window.
 
 | Evidence | Result |
@@ -62,7 +62,7 @@ validation window.
 | Internal-test WAPE | 15.6431% |
 | Internal-test signed bias | 0.7623% |
 | Kaggle inference rows written | 28,512 |
-| Core automated contract tests | 63/63 passed locally and in GitHub Actions |
+| Core automated contract tests | 74/74 passed locally and in GitHub Actions |
 | Optional interview-demo checks | 5/5 passed locally |
 | API batch verification | 28,512/28,512 predictions matched |
 | Local Docker verification | Healthy; 28,512/28,512 predictions matched |
@@ -74,6 +74,9 @@ healthy Docker container, with every prediction matching the notebook batch.
 
 Error analysis breaks the internal test down by forecast day, store, product
 family, promotion, and holiday status while leaving the selected model frozen.
+The S1 selection path now runs the same 30 configurations across 4 expanding
+validation folds; its material model-quality result is recorded only after the
+private workload completes.
 
 ## Technology stack
 
@@ -102,16 +105,16 @@ competition.
 | `sample_submission.csv` | output identity and ordering check |
 
 - **Target:** recorded `sales`.
-- **Prediction grain:** one future `date x store_nbr x family` row.
+- **Prediction grain:** a future `date x store_nbr x family` row.
 - **Forecast horizon:** 16 consecutive calendar days.
 - **History:** 2013-2017.
 - **Product level:** `family` category.
 
 The model uses planned promotions, store metadata, forecast-known calendar and
-operating-status fields, one planned-event signal, last-known historical oil
+operating-status fields, a planned-event signal, last-known historical oil
 with source age, exact historical transactions, and past sales. Calendar input
 is limited to month, day of month, and day of week, with Monday represented by
-1 and Sunday by 7. The four historical lags are 16, 21, 28, and 35 days.
+1 and Sunday by 7. The 4 historical lags are 16, 21, 28, and 35 days.
 `sample_submission.csv` validates output identity and order; it is not a
 predictor. The Manabi earthquake sequence and target-period actual oil are
 excluded to keep the feature contract credible outside the competition.
@@ -122,16 +125,34 @@ the data.
 
 ## Evaluation design
 
+The accepted V1 evidence used this fixed split:
+
 | Split | Date range | Use |
 |---|---|---|
 | Train / EDA | 2013-01-01 to 2017-07-14 | target analysis, features, and model fitting |
-| Validation | 2017-07-15 to 2017-07-30 | compare two ML methods |
-| Internal test | 2017-07-31 to 2017-08-15 | one final local evaluation |
+| Validation | 2017-07-15 to 2017-07-30 | compare 2 ML methods |
+| Internal test | 2017-07-31 to 2017-08-15 | final local evaluation |
 | Kaggle inference | 2017-08-16 to 2017-08-31 | generate predictions without local labels |
 
 Target analysis uses train only. The earliest rows form a warm-up period until
 35-day sales and oil history exists. Validation selects the Ridge or XGBoost
-configuration before one evaluation on the later internal test.
+configuration before evaluation on the later internal test.
+
+S1 strengthens model selection with this expanding-window sequence:
+
+| Stage | Training dates | Validation or forecast dates | Purpose |
+|---|---|---|---|
+| Warm-up | 2013-01-01 to 2013-02-05 | - | supply the 35-day lag history; excluded from model fitting |
+| Fold W1 | 2013-02-06 to 2016-08-25 | 2016-08-26 to 2016-09-10 | typical operating context |
+| Fold W2 | 2013-02-06 to 2016-11-24 | 2016-11-25 to 2016-12-10 | planned-event and promotion stress |
+| Fold W3 | 2013-02-06 to 2017-02-15 | 2017-02-16 to 2017-03-03 | holiday stress |
+| Fold W4 | 2013-02-06 to 2017-06-28 | 2017-06-29 to 2017-07-14 | recent operating context |
+| Internal test | 2013-02-06 to 2017-07-30 | 2017-07-31 to 2017-08-15 | score the frozen selection once |
+| Final refit | 2013-02-06 to 2017-08-15 | 2017-08-16 to 2017-08-31 | create the private Kaggle candidate |
+
+All 3 Ridge and 27 XGBoost configurations use the same 4 folds. The lowest
+equal-fold mean RMSLE wins, with mean WAPE as the tie-breaker. The internal test
+does not participate in selection.
 
 ## Project structure
 
@@ -150,11 +171,11 @@ Dockerfile                        Reproducible local API image
                                   Private-data-free CI contract tests
 store_sales_preprocessing.py    Reusable raw-to-processed logic
 store_sales_model.py             Model artifact and 16-day batch inference
-evaluate_store_sales.py          Fixed four-origin historical evaluator
+evaluate_store_sales.py          4-fold model selection and private candidate build
 test_store_sales_model.py        Synthetic automated contract tests
 test_evaluate_store_sales.py     Historical-evaluation contract tests
 verify_api.py                    Live full-batch API verification client
-demo.ps1                        Optional one-command interview demo
+demo.ps1                        Optional single-command interview demo
 requirements.txt                 Development and verification dependencies
 requirements-runtime.txt         Minimal API and model-serving dependencies
 constraints.txt                  Shared resolved dependency constraints
@@ -173,7 +194,7 @@ engineering evidence.
 
 After the local environment, private artifact, compact runtime history, and
 Docker image have been prepared once, the complete demonstration starts with
-one PowerShell command:
+a single PowerShell command:
 
 ```powershell
 & ".\demo.ps1"
@@ -181,7 +202,7 @@ one PowerShell command:
 
 The launcher creates a temporary API key, restarts the named local container,
 waits for Docker readiness, runs the complete 28,512-row HTTP verification,
-records notebook-batch parity for that exact response, and opens one local
+records notebook-batch parity for that exact response, and opens the local
 operational dashboard. The default Planning Workspace lets a demand planner
 filter the verified model output by store and product family, review the
 16-day curve and row-level forecast, and download the selected planning slice
@@ -231,7 +252,7 @@ It reuses the smaller `requirements-runtime.txt` service environment, while
 & ".\.venv\Scripts\python.exe" -m kaggle auth login
 ```
 
-Select `.\.venv\Scripts\python.exe` as the Jupyter kernel for all three
+Select `.\.venv\Scripts\python.exe` as the Jupyter kernel for all 3
 notebooks so the interactive environment uses the installed project
 dependencies.
 
@@ -255,10 +276,10 @@ Open the notebooks from the project root and run them in this order:
 2. `02_STORE_SALES_EDA.ipynb`
 3. `03_STORE_SALES_MODELING.ipynb`
 
-Notebook 01 inspects all seven competition files, preprocesses the six modeling
+Notebook 01 inspects all 7 competition files, preprocesses the 6 modeling
 inputs, and reserves `sample_submission.csv` for the final output-order check.
 It performs and validates every accepted join and feature transformation before
-replacing the two processed CSVs. Notebook 02 checks the exact 34-column header
+replacing the 2 processed CSVs. Notebook 02 checks the exact 34-column header
 before EDA. Notebook 03 checks both processed headers before feature engineering
 or model fitting. These checks prevent an older generated file from silently
 entering a later stage.
@@ -270,7 +291,7 @@ can be run with:
 .\.venv\Scripts\python.exe store_sales_preprocessing.py --overwrite
 ```
 
-The modeling notebook evaluates three Ridge settings and 27 XGBoost settings
+The modeling notebook evaluates 3 Ridge settings and 27 XGBoost settings
 on the fixed validation window. It intentionally avoids ordinary K-Fold because
 the experiment must preserve chronological order. The final section saves and
 reloads the selected processor and model before writing both a planning-friendly
@@ -290,14 +311,14 @@ calendar values match the dates, and all predictions are finite and
 non-negative. Generated artifacts and row-level forecasts remain excluded from
 Git.
 
-### Historical evaluation
+### 4-fold model selection
 
-The fixed `retail-history-eval-01` evaluator refits the unchanged V1
-configuration at 4 predeclared forecast origins and compares it with a weekly
-seasonal-naive reference. Each forecast is generated before scoring actuals are
-attached. The resulting private bundle contains identified row-level
-predictions, per-window and aggregate metrics, segment diagnostics, input and
-code fingerprints, resolved model configuration, and runtime provenance.
+The `retail-history-selection-01` evaluator runs all 30 frozen configurations
+at 4 predeclared forecast origins, producing 120 comparable validation fits.
+Each fold fits preprocessing only on its expanding training history. The
+selected configuration is then refitted through 2017-07-30 for the internal
+test and through 2017-08-15 for the private Kaggle candidate. Weekly seasonal
+naive remains a non-selectable benchmark.
 
 The windows follow a target-free scenario design. Complete 16-day candidates
 are ranked using only date coverage, known promotion exposure and intensity,
@@ -311,9 +332,11 @@ their selection.
 | W3 | Holiday stress | 2017-02-15 | 2017-02-16 to 2017-03-03 |
 | W4 | Most recent complete pre-validation period | 2017-06-28 | 2017-06-29 to 2017-07-14 |
 
-This preserves the equal forecast duration and expanding training history used
-in [time-series cross-validation](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html),
-while adding explicit operating scenarios to the fixed rolling-origin design.
+This preserves equal forecast duration and expanding training history from
+[time-series cross-validation](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html),
+while adding explicit operating scenarios to the rolling-origin design. The
+lowest mean validation RMSLE selects the configuration before the protected
+internal test is opened.
 
 Run the material evaluation once from the project environment:
 
@@ -322,10 +345,12 @@ Run the material evaluation once from the project environment:
 ```
 
 The output is written atomically under
-`artifacts/evaluation/retail-history-eval-01-v1/` and remains excluded from Git.
-Its aggregate RMSLE gives every 16-day window equal weight, while aggregate
-WAPE and bias use pooled sales and errors. Zero-actual slices preserve
-undefined percentage metrics as unavailable values.
+`artifacts/evaluation/retail-history-selection-01-v1/` and remains excluded
+from Git. It contains the 120 fold scores, ranked candidate summary, selected
+fold predictions and diagnostics, internal-test evidence, candidate artifact,
+Kaggle forecast and submission, input and code fingerprints, configuration,
+timing, and runtime provenance. The accepted V1 artifact and public demo remain
+unchanged until the candidate evidence is reviewed.
 
 Prepare the private deployment-only history without retraining or retuning:
 
@@ -333,7 +358,7 @@ Prepare the private deployment-only history without retraining or retuning:
 & ".\.venv\Scripts\python.exe" store_sales_model.py --prepare-deployment-history --overwrite
 ```
 
-The verified export contains only the four runtime fields required for sales
+The verified export contains only the 4 runtime fields required for sales
 lags across the final 35 history days. It reduced the serving history from the
 438.84-MiB complete labeled table to a 0.297-MiB private compressed file while
 preserving the artifact cutoff and key checks. Both files remain excluded from
@@ -350,7 +375,7 @@ model, or rerun hyperparameter tuning. They verify preprocessing semantics,
 valid inference, and rejection of malformed source events, horizons, keys,
 coverage, artifacts, and outputs.
 
-After the 63 core contracts and 5 optional demo checks pass, create a local key
+After the 74 core contracts and 5 optional demo checks pass, create a local key
 with at least 32 characters. Keep
 the value outside source code, shell commands, Docker images, and Git:
 
@@ -367,8 +392,8 @@ Then start the local API from that terminal:
 The interactive API contract is available at
 `http://127.0.0.1:8000/docs`. `GET /health` loads the trusted artifact and its
 compact 35-day sales context before reporting ready. `GET /metrics` reports
-bounded process-local operational counters. `POST /forecast` accepts one
-complete 16-day processed future batch and returns one prediction for every
+bounded process-local operational counters. `POST /forecast` accepts a
+complete 16-day processed future batch and returns a prediction for every
 input row. `/forecast` and `/metrics` require `X-API-Key`; `/health` remains a
 public readiness endpoint but reports ready only when authentication and model
 runtime configuration are both available.
@@ -387,9 +412,9 @@ $env:RETAIL_FORECAST_API_KEY = Read-Host "Enter the same local API key" -MaskInp
 The client verifies health, sends all 28,512 processed future rows to
 `POST /forecast`, checks the response contract, and compares every returned
 prediction with the notebook batch.
-It then sends one incomplete batch and one schema-invalid record, confirms both
+It then sends an incomplete batch and a schema-invalid record, confirms both
 are rejected, confirms that a missing API key returns HTTP 401, and checks that
-`/metrics` separates all three outcomes. The key is read from the environment
+`/metrics` separates all 3 outcomes. The key is read from the environment
 and is not accepted as a command-line argument.
 
 ## API authentication
@@ -425,7 +450,7 @@ $projectPath = (Get-Location).Path
 ```
 
 Start the container with the compact private runtime directory mounted
-read-only. The two path variables keep the private runtime boundary portable
+read-only. The 2 path variables keep the private runtime boundary portable
 without embedding the model or its history in the image:
 
 ```powershell
@@ -450,7 +475,7 @@ the 0.297-MiB compact history mounted read-only under `/app/private`.
 
 ## Structured logging
 
-The API writes one JSON record for every request with a UTC timestamp, generated
+The API writes a JSON record for every request with a UTC timestamp, generated
 request ID, HTTP method, endpoint path, response status, latency in milliseconds,
 and forecast row count. The same request ID is returned through the
 `X-Request-ID` response header.
@@ -468,14 +493,14 @@ counts, latency summaries by endpoint, forecast rows received, successful
 batches, schema rejections, contract rejections, unavailable runtime responses,
 authentication rejections, and model errors.
 
-The verified container run recorded one successful 28,512-row batch, one
-schema rejection, one batch-contract rejection, one authentication rejection,
+The verified container run recorded 1 successful 28,512-row batch, 1 schema
+rejection, 1 batch-contract rejection, 1 authentication rejection,
 and zero runtime or model errors.
 
 ## Continuous integration
 
 The GitHub Actions workflow installs Python 3.12.10 with the constrained
-development environment, runs 63 core contracts plus 5 optional interview-demo
+development environment, runs 74 core contracts plus 5 optional interview-demo
 checks, builds the final runtime image, verifies its non-root user and reduced
 dependency boundary, and starts a private-data-free synthetic runtime until the
 container reports ready. The CI-only stage is separate from the final runtime

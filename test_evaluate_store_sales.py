@@ -1,7 +1,9 @@
-"""Synthetic contracts for the fixed Store Sales historical evaluator."""
+"""Synthetic contracts for Store Sales model selection and evaluation."""
 
 from __future__ import annotations
 
+from contextlib import redirect_stdout
+from io import StringIO
 import json
 from pathlib import Path
 import tempfile
@@ -151,6 +153,177 @@ class WindowContractTests(unittest.TestCase):
         missing_date = source.loc[source["date"].ne(pd.Timestamp("2016-09-01"))]
         with self.assertRaisesRegex(ValueError, "missing required scoring dates"):
             evaluator.validate_evaluation_source(missing_date)
+
+
+class CandidateSelectionTests(unittest.TestCase):
+    def test_registry_contains_the_frozen_3_plus_27_search_space(self) -> None:
+        candidates = evaluator.build_candidate_registry()
+
+        self.assertEqual(len(candidates), 30)
+        self.assertEqual(len({candidate["run_id"] for candidate in candidates}), 30)
+        self.assertEqual(
+            sum(candidate["method"] == "Ridge Regression" for candidate in candidates),
+            3,
+        )
+        self.assertEqual(
+            sum(
+                candidate["method"] == "XGBoost Regression"
+                for candidate in candidates
+            ),
+            27,
+        )
+        self.assertEqual(sum(candidate["v1_reference"] for candidate in candidates), 1)
+
+    def test_complete_candidates_use_mean_rmsle_then_mean_wape(self) -> None:
+        records: list[dict[str, object]] = []
+        for run_id, wape in [("candidate_a", 12.0), ("candidate_b", 9.0)]:
+            for window in evaluator.EVALUATION_WINDOWS:
+                records.append(
+                    {
+                        "run_id": run_id,
+                        "method": "Ridge Regression",
+                        "parameters_json": '{"alpha": 1.0}',
+                        "default_reference": False,
+                        "v1_reference": False,
+                        "window_id": window.window_id,
+                        "rmsle": 0.2,
+                        "wape_pct": wape,
+                        "signed_bias_pct": 1.0,
+                        "fit_seconds": 2.0,
+                        "predict_seconds": 0.1,
+                    }
+                )
+
+        summary = evaluator.aggregate_candidate_metrics(pd.DataFrame(records))
+
+        self.assertEqual(summary.loc[0, "run_id"], "candidate_b")
+        self.assertEqual(summary.loc[0, "rank"], 1)
+        self.assertEqual(summary.loc[0, "fold_count"], 4)
+        self.assertAlmostEqual(summary.loc[0, "mean_rmsle"], 0.2)
+        self.assertAlmostEqual(summary.loc[0, "total_fit_seconds"], 8.0)
+
+    def test_incomplete_or_duplicate_candidate_folds_are_rejected(self) -> None:
+        records = [
+            {
+                "run_id": "candidate_a",
+                "method": "Ridge Regression",
+                "parameters_json": '{"alpha": 1.0}',
+                "default_reference": False,
+                "v1_reference": False,
+                "window_id": window.window_id,
+                "rmsle": 0.2,
+                "wape_pct": 10.0,
+                "signed_bias_pct": 1.0,
+                "fit_seconds": 1.0,
+                "predict_seconds": 0.1,
+            }
+            for window in evaluator.EVALUATION_WINDOWS
+        ]
+
+        with self.assertRaisesRegex(ValueError, "all 4 validation windows"):
+            evaluator.aggregate_candidate_metrics(pd.DataFrame(records[:-1]))
+        with self.assertRaisesRegex(ValueError, "duplicate run-window"):
+            evaluator.aggregate_candidate_metrics(pd.DataFrame([*records, records[0]]))
+
+    def test_internal_test_is_separate_and_follows_development_data(self) -> None:
+        internal = evaluator.INTERNAL_TEST_WINDOW
+
+        self.assertNotIn(internal, evaluator.EVALUATION_WINDOWS)
+        self.assertEqual(internal.origin, evaluator.DEVELOPMENT_END)
+        self.assertEqual(internal.start, pd.Timestamp("2017-07-31"))
+        self.assertEqual(internal.end, pd.Timestamp("2017-08-15"))
+        evaluator.validate_window_contract(
+            [*evaluator.EVALUATION_WINDOWS, evaluator.INTERNAL_TEST_WINDOW]
+        )
+
+    def test_search_scores_each_candidate_on_each_fold_before_materializing(self) -> None:
+        class FakeProcessor:
+            def fit_transform(self, frame: pd.DataFrame) -> np.ndarray:
+                return np.zeros((len(frame), 1), dtype=np.float32)
+
+            def transform(self, frame: pd.DataFrame) -> np.ndarray:
+                return np.zeros((len(frame), 1), dtype=np.float32)
+
+        class FakeModel:
+            def __init__(self, prediction: float) -> None:
+                self.prediction = prediction
+
+            def fit(self, _features: np.ndarray, _target: np.ndarray) -> "FakeModel":
+                return self
+
+            def predict(self, features: np.ndarray) -> np.ndarray:
+                return np.full(len(features), np.log1p(self.prediction))
+
+        candidates = [
+            {
+                "run_id": "ridge_01",
+                "method": "Ridge Regression",
+                "parameters": {"alpha": 1.0},
+                "parameters_json": '{"alpha": 1.0}',
+                "default_reference": True,
+                "v1_reference": False,
+            },
+            {
+                "run_id": "ridge_02",
+                "method": "Ridge Regression",
+                "parameters": {"alpha": 2.0},
+                "parameters_json": '{"alpha": 2.0}',
+                "default_reference": False,
+                "v1_reference": True,
+            },
+        ]
+        training = pd.DataFrame(
+            {"date": pd.to_datetime(["2024-01-01"]), "sales": [1.0]}
+        )
+        future = make_prediction_rows(["2024-01-02", "2024-01-03"]).drop(
+            columns="forecast_sales"
+        )
+        history = training.assign(store_nbr=1, family="A")
+        actuals = future.copy()
+        actuals["sales"] = 2.0
+        actuals["onpromotion"] = 0
+        actuals["is_holiday"] = 0
+        actuals = actuals[evaluator.ACTUAL_CONTEXT_COLUMNS]
+
+        def build_inputs(*_args: object) -> tuple[pd.DataFrame, ...]:
+            return training.copy(), future.copy(), history.copy(), actuals.copy()
+
+        def build_fake_model(
+            _method: str, parameters: dict[str, float | int]
+        ) -> FakeModel:
+            return FakeModel(float(parameters["alpha"]))
+
+        def make_naive(
+            future_rows: pd.DataFrame,
+            _history: pd.DataFrame,
+            _origin: pd.Timestamp,
+        ) -> pd.DataFrame:
+            output = future_rows[["id", *evaluator.BASE_KEY]].copy()
+            output["forecast_sales"] = 1.0
+            return output
+
+        with (
+            patch.object(evaluator, "MODEL_FEATURES", []),
+            patch.object(evaluator, "build_candidate_registry", return_value=candidates),
+            patch.object(evaluator, "build_fold_inputs", side_effect=build_inputs),
+            patch.object(evaluator, "make_feature_processor", side_effect=FakeProcessor),
+            patch.object(evaluator, "build_model", side_effect=build_fake_model),
+            patch.object(evaluator, "make_weekly_seasonal_naive", side_effect=make_naive),
+            redirect_stdout(StringIO()),
+        ):
+            folds, summary, cache, contexts = evaluator.run_candidate_search(
+                pd.DataFrame(), pd.DataFrame(), pd.Timestamp("2024-01-01")
+            )
+            predictions, metrics = evaluator.materialize_selected_fold_evidence(
+                summary.iloc[0], folds, cache, contexts
+            )
+
+        self.assertEqual(len(folds), 8)
+        self.assertEqual(len(cache), 8)
+        self.assertEqual(len(contexts), 4)
+        self.assertEqual(summary.loc[0, "run_id"], "ridge_02")
+        self.assertEqual(len(predictions), 16)
+        self.assertEqual(len(metrics), 8)
 
 
 class SeasonalNaiveTests(unittest.TestCase):
@@ -517,6 +690,41 @@ class MetricAndOutputTests(unittest.TestCase):
                 )
             self.assertFalse((output_root / ".bad-run.tmp").exists())
             self.assertFalse((output_root / "bad-run").exists())
+
+    def test_output_bundle_can_publish_the_private_candidate_tables(self) -> None:
+        predictions = make_prediction_rows(["2024-01-11"])
+        diagnostics = pd.DataFrame({"slice_type": ["store"], "slice_value": ["1"]})
+        candidate_folds = pd.DataFrame({"run_id": ["ridge_01"], "rmsle": [0.2]})
+        candidate_summary = pd.DataFrame({"rank": [1], "run_id": ["ridge_01"]})
+        internal = predictions.copy()
+        kaggle_forecast = predictions.copy()
+        kaggle_submission = pd.DataFrame({"id": [100], "sales": [1.0]})
+
+        with tempfile.TemporaryDirectory(dir=evaluator.PROJECT_ROOT) as temporary_root:
+            result = evaluator.write_evaluation_bundle(
+                Path(temporary_root) / "evaluation",
+                "candidate-run",
+                predictions,
+                {"contract_id": evaluator.CONTRACT_ID},
+                diagnostics,
+                {"contract_id": evaluator.CONTRACT_ID, "run_id": "candidate-run"},
+                candidate_fold_metrics=candidate_folds,
+                candidate_summary=candidate_summary,
+                internal_predictions=internal,
+                kaggle_forecast=kaggle_forecast,
+                kaggle_submission=kaggle_submission,
+            )
+
+            expected_optional = {
+                "candidate_fold_metrics.csv",
+                "candidate_summary.csv",
+                "internal_predictions.csv.gz",
+                "kaggle_forecast.csv.gz",
+                "kaggle_submission.csv",
+            }
+            self.assertTrue(expected_optional.issubset({path.name for path in result.iterdir()}))
+            manifest = json.loads((result / "manifest.json").read_text(encoding="utf-8"))
+            self.assertTrue(expected_optional.issubset(manifest["outputs"]))
 
     def test_run_ids_and_project_boundary_are_enforced(self) -> None:
         self.assertEqual(evaluator.validate_run_id("history-01.v1"), "history-01.v1")
