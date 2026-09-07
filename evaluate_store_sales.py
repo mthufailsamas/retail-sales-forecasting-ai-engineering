@@ -81,11 +81,56 @@ class EvaluationWindow:
         return pd.Timestamp(self.scoring_end)
 
 
+@dataclass(frozen=True)
+class WindowSelectionBlock:
+    """One target-free calendar block and its predeclared selection strategy."""
+
+    window_id: str
+    role: str
+    candidate_start: str
+    candidate_end: str
+    strategy: str
+
+    @property
+    def start(self) -> pd.Timestamp:
+        return pd.Timestamp(self.candidate_start)
+
+    @property
+    def end(self) -> pd.Timestamp:
+        return pd.Timestamp(self.candidate_end)
+
+
 EVALUATION_WINDOWS = (
-    EvaluationWindow("W1", "2016-06-30", "2016-07-01", "2016-07-16"),
-    EvaluationWindow("W2", "2016-11-14", "2016-11-15", "2016-11-30"),
-    EvaluationWindow("W3", "2017-02-28", "2017-03-01", "2017-03-16"),
-    EvaluationWindow("W4", "2017-05-31", "2017-06-01", "2017-06-16"),
+    EvaluationWindow("W1", "2016-08-25", "2016-08-26", "2016-09-10"),
+    EvaluationWindow("W2", "2016-11-24", "2016-11-25", "2016-12-10"),
+    EvaluationWindow("W3", "2017-02-15", "2017-02-16", "2017-03-03"),
+    EvaluationWindow("W4", "2017-06-28", "2017-06-29", "2017-07-14"),
+)
+WINDOW_SELECTION_SOURCE_COLUMNS = (
+    "date",
+    "store_nbr",
+    "family",
+    "onpromotion",
+    "is_holiday",
+    "is_planned_event",
+)
+WINDOW_SELECTION_BLOCKS = (
+    WindowSelectionBlock(
+        "W1", "typical_context", "2016-07-01", "2016-09-30", "typical"
+    ),
+    WindowSelectionBlock(
+        "W2",
+        "planned_event_and_promotion_stress",
+        "2016-10-01",
+        "2016-12-31",
+        "planned_event_stress",
+    ),
+    WindowSelectionBlock(
+        "W3", "holiday_stress", "2017-01-01", "2017-03-31", "holiday_stress"
+    ),
+    WindowSelectionBlock(
+        "W4", "recent_pre_validation", "2017-04-01", "2017-07-14", "latest"
+    ),
 )
 
 
@@ -115,6 +160,152 @@ def validate_window_contract(
             raise ValueError("Historical evaluation windows must not overlap.")
         previous_end = window.end
     return window_tuple
+
+
+def build_window_candidates(
+    labeled: pd.DataFrame,
+    block: WindowSelectionBlock,
+) -> pd.DataFrame:
+    """Summarize complete 16-day candidates using target-free known context."""
+    missing = [
+        column for column in WINDOW_SELECTION_SOURCE_COLUMNS if column not in labeled
+    ]
+    if missing:
+        raise ValueError(f"Window selection is missing source columns: {missing}")
+    if block.end - block.start < pd.Timedelta(days=FORECAST_HORIZON_DAYS - 1):
+        raise ValueError(f"{block.window_id} selection block is shorter than 16 days.")
+
+    pair_count = int(labeled[["store_nbr", "family"]].drop_duplicates().shape[0])
+    if pair_count <= 0:
+        raise ValueError("Window selection requires at least one store-family pair.")
+    daily = labeled.groupby("date", observed=True, sort=True).agg(
+        rows=("family", "size"),
+        promotion_rows=("onpromotion", lambda values: int(values.gt(0).sum())),
+        promotion_units=("onpromotion", "sum"),
+        holiday_rows=("is_holiday", "sum"),
+        planned_event_rows=("is_planned_event", "sum"),
+    )
+
+    records: list[dict[str, Any]] = []
+    latest_start = block.end - pd.Timedelta(days=FORECAST_HORIZON_DAYS - 1)
+    for start in pd.date_range(block.start, latest_start, freq="D"):
+        dates = pd.date_range(start, periods=FORECAST_HORIZON_DAYS, freq="D")
+        context = daily.reindex(dates)
+        if context["rows"].isna().any() or not context["rows"].eq(pair_count).all():
+            continue
+        total_rows = float(context["rows"].sum())
+        records.append(
+            {
+                "start": start,
+                "end": dates.max(),
+                "promotion_share": float(
+                    context["promotion_rows"].sum() / total_rows
+                ),
+                "promotion_units_per_row": float(
+                    context["promotion_units"].sum() / total_rows
+                ),
+                "holiday_share": float(context["holiday_rows"].sum() / total_rows),
+                "planned_event_share": float(
+                    context["planned_event_rows"].sum() / total_rows
+                ),
+            }
+        )
+    if not records:
+        raise ValueError(f"{block.window_id} has no complete 16-day candidate window.")
+    return pd.DataFrame(records)
+
+
+def select_window_candidate(
+    candidates: pd.DataFrame,
+    strategy: str,
+) -> pd.Series:
+    """Apply one deterministic, target-free ranking rule to candidate windows."""
+    required = {
+        "start",
+        "end",
+        "promotion_share",
+        "promotion_units_per_row",
+        "holiday_share",
+        "planned_event_share",
+    }
+    if candidates.empty or not required.issubset(candidates.columns):
+        raise ValueError("Window candidates do not match the selection contract.")
+    ranked = candidates.copy()
+    if strategy == "typical":
+        measures = ["promotion_share", "holiday_share", "planned_event_share"]
+        medians = ranked[measures].median()
+        scales = ranked[measures].std(ddof=0).replace(0.0, 1.0)
+        ranked["selection_score"] = (
+            ((ranked[measures] - medians) / scales) ** 2
+        ).sum(axis=1)
+        ranked = ranked.sort_values(["selection_score", "start"])
+    elif strategy == "planned_event_stress":
+        ranked = ranked.sort_values(
+            [
+                "planned_event_share",
+                "promotion_share",
+                "promotion_units_per_row",
+                "holiday_share",
+                "start",
+            ],
+            ascending=[False, False, False, False, True],
+        )
+    elif strategy == "holiday_stress":
+        ranked = ranked.sort_values(
+            ["holiday_share", "promotion_share", "promotion_units_per_row", "start"],
+            ascending=[False, False, False, True],
+        )
+    elif strategy == "latest":
+        ranked = ranked.sort_values("start", ascending=False)
+    else:
+        raise ValueError(f"Unknown window selection strategy: {strategy}")
+    return ranked.iloc[0]
+
+
+def derive_window_selection(
+    labeled: pd.DataFrame,
+) -> tuple[tuple[EvaluationWindow, ...], list[dict[str, Any]]]:
+    """Derive and describe the 4 frozen windows without consulting sales."""
+    windows: list[EvaluationWindow] = []
+    selection_records: list[dict[str, Any]] = []
+    for block in WINDOW_SELECTION_BLOCKS:
+        candidates = build_window_candidates(labeled, block)
+        selected = select_window_candidate(candidates, block.strategy)
+        start = pd.Timestamp(selected["start"])
+        end = pd.Timestamp(selected["end"])
+        windows.append(
+            EvaluationWindow(
+                block.window_id,
+                (start - pd.Timedelta(days=1)).date().isoformat(),
+                start.date().isoformat(),
+                end.date().isoformat(),
+            )
+        )
+        selection_records.append(
+            {
+                **asdict(block),
+                "candidate_window_count": int(len(candidates)),
+                "selected_scoring_start": start.date().isoformat(),
+                "selected_scoring_end": end.date().isoformat(),
+                "promotion_share": float(selected["promotion_share"]),
+                "promotion_units_per_row": float(
+                    selected["promotion_units_per_row"]
+                ),
+                "holiday_share": float(selected["holiday_share"]),
+                "planned_event_share": float(selected["planned_event_share"]),
+            }
+        )
+    return tuple(windows), selection_records
+
+
+def validate_frozen_window_selection(labeled: pd.DataFrame) -> list[dict[str, Any]]:
+    """Require the current target-free rules to reproduce the frozen dates."""
+    derived_windows, selection_records = derive_window_selection(labeled)
+    if derived_windows != EVALUATION_WINDOWS:
+        raise RuntimeError(
+            "Target-free window selection no longer reproduces the frozen contract."
+        )
+    return selection_records
 
 
 def validate_run_id(run_id: str) -> str:
@@ -676,6 +867,7 @@ def run_historical_evaluation(
     input_sha256 = sha256_file(labeled_path)
     labeled = read_processed_table(labeled_path, has_target=True)
     validate_evaluation_source(labeled, windows)
+    window_selection = validate_frozen_window_selection(labeled)
     labeled_features = add_exact_sales_lags(labeled, labeled)
     model_start = find_model_start(labeled_features)
 
@@ -751,6 +943,12 @@ def run_historical_evaluation(
         "configuration": {
             "model_start": model_start.date().isoformat(),
             "windows": [asdict(window) for window in windows],
+            "window_selection": {
+                "method": "target_free_scenario_stratification",
+                "source_columns": list(WINDOW_SELECTION_SOURCE_COLUMNS),
+                "blocks": [asdict(block) for block in WINDOW_SELECTION_BLOCKS],
+                "selected_context": window_selection,
+            },
             "v1_method": V1_METHOD,
             "v1_selected_parameters": dict(V1_PARAMETERS),
             "v1_resolved_parameters": resolved_v1_parameters,

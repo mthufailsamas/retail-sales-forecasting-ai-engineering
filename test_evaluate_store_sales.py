@@ -40,9 +40,69 @@ class WindowContractTests(unittest.TestCase):
         self.assertEqual(
             [window.window_id for window in windows], ["W1", "W2", "W3", "W4"]
         )
+        self.assertEqual(
+            [window.scoring_start for window in windows],
+            ["2016-08-26", "2016-11-25", "2017-02-16", "2017-06-29"],
+        )
         self.assertTrue(
             all(len(pd.date_range(window.start, window.end)) == 16 for window in windows)
         )
+
+    def test_selection_contract_uses_no_target_or_realized_context(self) -> None:
+        self.assertNotIn("sales", evaluator.WINDOW_SELECTION_SOURCE_COLUMNS)
+        self.assertEqual(
+            [block.strategy for block in evaluator.WINDOW_SELECTION_BLOCKS],
+            ["typical", "planned_event_stress", "holiday_stress", "latest"],
+        )
+
+    def test_candidate_strategies_are_deterministic(self) -> None:
+        candidates = pd.DataFrame(
+            {
+                "start": pd.to_datetime(
+                    ["2024-01-01", "2024-01-02", "2024-01-03"]
+                ),
+                "end": pd.to_datetime(
+                    ["2024-01-16", "2024-01-17", "2024-01-18"]
+                ),
+                "promotion_share": [0.1, 0.2, 0.9],
+                "promotion_units_per_row": [1.0, 2.0, 9.0],
+                "holiday_share": [0.0, 0.1, 0.8],
+                "planned_event_share": [0.1, 0.5, 0.9],
+            }
+        )
+
+        expected = {
+            "typical": "2024-01-02",
+            "planned_event_stress": "2024-01-03",
+            "holiday_stress": "2024-01-03",
+            "latest": "2024-01-03",
+        }
+        for strategy, expected_start in expected.items():
+            with self.subTest(strategy=strategy):
+                selected = evaluator.select_window_candidate(candidates, strategy)
+                self.assertEqual(selected["start"], pd.Timestamp(expected_start))
+
+    def test_candidate_builder_rejects_incomplete_16_day_windows(self) -> None:
+        block = evaluator.WindowSelectionBlock(
+            "T1", "test", "2024-01-01", "2024-01-17", "latest"
+        )
+        complete = pd.DataFrame(
+            {
+                "date": pd.date_range("2024-01-01", periods=17),
+                "store_nbr": 1,
+                "family": "A",
+                "onpromotion": 0,
+                "is_holiday": 0,
+                "is_planned_event": 0,
+            }
+        )
+
+        candidates = evaluator.build_window_candidates(complete, block)
+
+        self.assertEqual(len(candidates), 2)
+        incomplete = complete.loc[complete["date"].ne(pd.Timestamp("2024-01-09"))]
+        with self.assertRaisesRegex(ValueError, "no complete 16-day candidate"):
+            evaluator.build_window_candidates(incomplete, block)
 
     def test_invalid_horizon_and_overlap_are_rejected(self) -> None:
         wrong_horizon = evaluator.EvaluationWindow(
@@ -88,7 +148,7 @@ class WindowContractTests(unittest.TestCase):
         source = pd.DataFrame(rows)
 
         evaluator.validate_evaluation_source(source)
-        missing_date = source.loc[source["date"].ne(pd.Timestamp("2016-07-08"))]
+        missing_date = source.loc[source["date"].ne(pd.Timestamp("2016-09-01"))]
         with self.assertRaisesRegex(ValueError, "missing required scoring dates"):
             evaluator.validate_evaluation_source(missing_date)
 

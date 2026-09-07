@@ -20,7 +20,7 @@ consistent view of expected category demand before the next cycle begins.
 |---|---|
 | **Problem** | One overall average cannot represent demand across 54 stores, 33 product families, promotions, holidays, and local operating conditions. |
 | **Solution** | A multi-source feature pipeline compares Ridge and XGBoost chronologically, then packages the selected model for batch and API inference. |
-| **Verified result** | The system generated 28,512 store-family forecasts with 15.6431% internal-test WAPE and 0.7623% signed bias; all 60 core contract tests passed locally and in GitHub Actions, and local API and Docker predictions matched the notebook batch exactly. |
+| **Verified result** | The system generated 28,512 store-family forecasts with 15.6431% internal-test WAPE and 0.7623% signed bias; all 63 core contract tests passed locally and in GitHub Actions, and local API and Docker predictions matched the notebook batch exactly. |
 
 Demand moves differently across stores, product families, promotions, weekly
 patterns, and local events. The system handles that variation at the
@@ -62,7 +62,7 @@ validation window.
 | Internal-test WAPE | 15.6431% |
 | Internal-test signed bias | 0.7623% |
 | Kaggle inference rows written | 28,512 |
-| Core automated contract tests | 60/60 passed locally and in GitHub Actions |
+| Core automated contract tests | 63/63 passed locally and in GitHub Actions |
 | Optional interview-demo checks | 5/5 passed locally |
 | API batch verification | 28,512/28,512 predictions matched |
 | Local Docker verification | Healthy; 28,512/28,512 predictions matched |
@@ -299,6 +299,22 @@ attached. The resulting private bundle contains identified row-level
 predictions, per-window and aggregate metrics, segment diagnostics, input and
 code fingerprints, resolved model configuration, and runtime provenance.
 
+The windows follow a target-free scenario design. Complete 16-day candidates
+are ranked using only date coverage, known promotion exposure and intensity,
+and scheduled calendar context. Sales and model errors do not participate in
+their selection.
+
+| Window | Evaluation role | Forecast origin | Scoring dates |
+|---|---|---|---|
+| W1 | Typical operating context | 2016-08-25 | 2016-08-26 to 2016-09-10 |
+| W2 | Planned-event and promotion stress | 2016-11-24 | 2016-11-25 to 2016-12-10 |
+| W3 | Holiday stress | 2017-02-15 | 2017-02-16 to 2017-03-03 |
+| W4 | Most recent complete pre-validation period | 2017-06-28 | 2017-06-29 to 2017-07-14 |
+
+This preserves the equal forecast duration and expanding training history used
+in [time-series cross-validation](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html),
+while adding explicit operating scenarios to the fixed rolling-origin design.
+
 Run the material evaluation once from the project environment:
 
 ```powershell
@@ -334,7 +350,7 @@ model, or rerun hyperparameter tuning. They verify preprocessing semantics,
 valid inference, and rejection of malformed source events, horizons, keys,
 coverage, artifacts, and outputs.
 
-After the 60 core contracts and 5 optional demo checks pass, create a local key
+After the 63 core contracts and 5 optional demo checks pass, create a local key
 with at least 32 characters. Keep
 the value outside source code, shell commands, Docker images, and Git:
 
@@ -459,7 +475,7 @@ and zero runtime or model errors.
 ## Continuous integration
 
 The GitHub Actions workflow installs Python 3.12.10 with the constrained
-development environment, runs 60 core contracts plus 5 optional interview-demo
+development environment, runs 63 core contracts plus 5 optional interview-demo
 checks, builds the final runtime image, verifies its non-root user and reduced
 dependency boundary, and starts a private-data-free synthetic runtime until the
 container reports ready. The CI-only stage is separate from the final runtime
