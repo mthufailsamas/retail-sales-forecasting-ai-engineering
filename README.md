@@ -152,7 +152,9 @@ store_sales_model.py             Model artifact and 16-day batch inference
 test_store_sales_model.py        Synthetic automated contract tests
 verify_api.py                    Live full-batch API verification client
 demo.ps1                        Optional one-command interview demo
-requirements.txt                 Current Python dependencies
+requirements.txt                 Development and verification dependencies
+requirements-runtime.txt         Minimal API and model-serving dependencies
+constraints.txt                  Shared resolved dependency constraints
 LICENSE                          MIT terms for original code and documentation
 ```
 
@@ -217,6 +219,10 @@ python -m venv .venv
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
+
+`requirements.txt` installs the notebook, data, test, and verification tools.
+It reuses the smaller `requirements-runtime.txt` service environment, while
+`constraints.txt` constrains the resolved versions shared by both installations.
 
 ```powershell
 & ".\.venv\Scripts\python.exe" -m kaggle auth login
@@ -356,10 +362,12 @@ client credentials return HTTP 401; missing server configuration returns HTTP
 
 ## Docker
 
-The API can use the same pinned environment inside a local container. The
-runtime stage executes as the unprivileged `retail` user, and the private
-artifact and processed history are not copied into the image. Stop the
-standalone Uvicorn process first so port 8000 is available, then build the image:
+The API uses the constrained runtime-only environment inside a local container.
+Notebook, Kaggle, plotting, and HTTP test-client packages stay outside the
+runtime image. The runtime stage executes as the unprivileged `retail` user,
+and the private artifact and processed history are not copied into the image.
+Stop the standalone Uvicorn process first so port 8000 is available, then build
+the image:
 
 ```powershell
 docker build --tag retail-sales-forecast-api:v1 .
@@ -381,7 +389,7 @@ read-only. The two path variables keep the private runtime boundary portable
 without embedding the model or its history in the image:
 
 ```powershell
-docker run --rm --detach --name retail-sales-forecast-api --publish 8000:8000 --env RETAIL_FORECAST_API_KEY --env RETAIL_FORECAST_ARTIFACT_PATH=/app/private/store_sales_forecast_v1.pkl --env RETAIL_FORECAST_HISTORY_PATH=/app/private/store_sales_forecast_v1_history.csv.gz --mount "type=bind,source=$projectPath\artifacts,target=/app/private,readonly" retail-sales-forecast-api:v1
+docker run --rm --detach --name retail-sales-forecast-api --publish 127.0.0.1:8000:8000 --env RETAIL_FORECAST_API_KEY --env RETAIL_FORECAST_ARTIFACT_PATH=/app/private/store_sales_forecast_v1.pkl --env RETAIL_FORECAST_HISTORY_PATH=/app/private/store_sales_forecast_v1_history.csv.gz --mount "type=bind,source=$projectPath\artifacts,target=/app/private,readonly" retail-sales-forecast-api:v1
 ```
 
 From the same terminal, check the Docker health status and run the same
@@ -426,12 +434,12 @@ and zero runtime or model errors.
 
 ## Continuous integration
 
-The GitHub Actions workflow installs Python 3.12.10 and the pinned dependencies,
-runs 44 core contracts plus 5 optional interview-demo checks, builds the final
-runtime image, verifies its non-root user, and starts a private-data-free
-synthetic runtime until the container reports ready. The CI-only stage is
-separate from the final runtime image and does not contain competition data or
-the fitted retail artifact.
+The GitHub Actions workflow installs Python 3.12.10 with the constrained
+development environment, runs 44 core contracts plus 5 optional interview-demo
+checks, builds the final runtime image, verifies its non-root user and reduced
+dependency boundary, and starts a private-data-free synthetic runtime until the
+container reports ready. The CI-only stage is separate from the final runtime
+image and does not contain competition data or the fitted retail artifact.
 
 ## Author
 

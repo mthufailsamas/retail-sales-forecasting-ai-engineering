@@ -23,6 +23,10 @@ jobs:
         with:
           python-version: "3.12.10"
           cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-runtime.txt
+            constraints.txt
 
       - name: Install pinned dependencies
         run: python -m pip install --requirement requirements.txt
@@ -38,13 +42,18 @@ jobs:
           test "$(docker image inspect --format '{{.Config.User}}'
           retail-sales-forecast-api:ci)" = "retail"
 
+      - name: Verify the runtime dependency boundary
+        run: |
+          docker run --rm retail-sales-forecast-api:ci python -m pip check
+          docker run --rm retail-sales-forecast-api:ci python -c "import importlib.util; excluded = ['httpx', 'httpx2', 'ipykernel', 'kaggle', 'matplotlib']; assert all(importlib.util.find_spec(name) is None for name in excluded)"
+
       - name: Build the private-data-free readiness image
         run: docker build --target ci-smoke --tag retail-sales-forecast-api:ci-smoke .
 
       - name: Start the readiness container
         run: >
           docker run --rm --detach --name retail-sales-forecast-ci
-          --publish 8000:8000
+          --publish 127.0.0.1:8000:8000
           --env RETAIL_FORECAST_API_KEY=ci-smoke-key-1234567890-abcdef-1234567890
           --health-interval 2s --health-start-period 1s
           --health-timeout 10s --health-retries 20

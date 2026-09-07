@@ -13,8 +13,8 @@ RUN apt-get update \
         --home-dir /nonexistent retail \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt ./
-RUN python -m pip install --no-cache-dir --requirement requirements.txt
+COPY constraints.txt requirements-runtime.txt ./
+RUN python -m pip install --no-cache-dir --requirement requirements-runtime.txt
 
 COPY --chown=retail:retail \
     app.py demo.html store_sales_model.py store_sales_preprocessing.py ./
