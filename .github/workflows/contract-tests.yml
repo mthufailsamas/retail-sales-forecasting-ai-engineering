@@ -31,6 +31,13 @@ jobs:
       - name: Install pinned dependencies
         run: python -m pip install --requirement requirements.txt
 
+      - name: Verify Linux-only dependency constraints
+        run: >
+          python -c "from importlib.metadata import version;
+          expected = {'nvidia-nccl-cu13': '2.31.2', 'pexpect': '4.9.0', 'ptyprocess': '0.7.0'};
+          actual = {name: version(name) for name in expected};
+          assert actual == expected, f'{actual} != {expected}'"
+
       - name: Run synthetic contract tests
         run: python -m unittest -v test_store_sales_model.py
 
@@ -46,6 +53,7 @@ jobs:
         run: |
           docker run --rm retail-sales-forecast-api:ci python -m pip check
           docker run --rm retail-sales-forecast-api:ci python -c "import importlib.util; excluded = ['httpx', 'httpx2', 'ipykernel', 'kaggle', 'matplotlib']; assert all(importlib.util.find_spec(name) is None for name in excluded)"
+          docker run --rm retail-sales-forecast-api:ci python -c "from importlib.metadata import version; assert version('nvidia-nccl-cu13') == '2.31.2'"
 
       - name: Build the private-data-free readiness image
         run: docker build --target ci-smoke --tag retail-sales-forecast-api:ci-smoke .
