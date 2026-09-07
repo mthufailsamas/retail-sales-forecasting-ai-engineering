@@ -20,7 +20,7 @@ consistent view of expected category demand before the next cycle begins.
 |---|---|
 | **Problem** | One overall average cannot represent demand across 54 stores, 33 product families, promotions, holidays, and local operating conditions. |
 | **Solution** | A multi-source feature pipeline compares Ridge and XGBoost chronologically, then packages the selected model for batch and API inference. |
-| **Verified result** | The system generated 28,512 store-family forecasts with 15.6431% internal-test WAPE and 0.7623% signed bias; all 44 core contract tests passed locally and in GitHub Actions, and local API and Docker predictions matched the notebook batch exactly. |
+| **Verified result** | The system generated 28,512 store-family forecasts with 15.6431% internal-test WAPE and 0.7623% signed bias; all 60 core contract tests passed locally and in GitHub Actions, and local API and Docker predictions matched the notebook batch exactly. |
 
 Demand moves differently across stores, product families, promotions, weekly
 patterns, and local events. The system handles that variation at the
@@ -35,6 +35,7 @@ flowchart LR
     B --> C["Training-only EDA"]
     C --> D["Cutoff-aligned feature engineering"]
     D --> E["Chronological model comparison"]
+    E --> L["Four-origin historical evaluator"]
     E --> F["Versioned XGBoost artifact"]
     F --> G["Authenticated FastAPI batch inference"]
     G --> H["Docker container"]
@@ -61,7 +62,7 @@ validation window.
 | Internal-test WAPE | 15.6431% |
 | Internal-test signed bias | 0.7623% |
 | Kaggle inference rows written | 28,512 |
-| Core automated contract tests | 44/44 passed locally and in GitHub Actions |
+| Core automated contract tests | 60/60 passed locally and in GitHub Actions |
 | Optional interview-demo checks | 5/5 passed locally |
 | API batch verification | 28,512/28,512 predictions matched |
 | Local Docker verification | Healthy; 28,512/28,512 predictions matched |
@@ -149,7 +150,9 @@ Dockerfile                        Reproducible local API image
                                   Private-data-free CI contract tests
 store_sales_preprocessing.py    Reusable raw-to-processed logic
 store_sales_model.py             Model artifact and 16-day batch inference
+evaluate_store_sales.py          Fixed four-origin historical evaluator
 test_store_sales_model.py        Synthetic automated contract tests
+test_evaluate_store_sales.py     Historical-evaluation contract tests
 verify_api.py                    Live full-batch API verification client
 demo.ps1                        Optional one-command interview demo
 requirements.txt                 Development and verification dependencies
@@ -287,6 +290,27 @@ calendar values match the dates, and all predictions are finite and
 non-negative. Generated artifacts and row-level forecasts remain excluded from
 Git.
 
+### Historical evaluation
+
+The fixed `retail-history-eval-01` evaluator refits the unchanged V1
+configuration at 4 predeclared forecast origins and compares it with a weekly
+seasonal-naive reference. Each forecast is generated before scoring actuals are
+attached. The resulting private bundle contains identified row-level
+predictions, per-window and aggregate metrics, segment diagnostics, input and
+code fingerprints, resolved model configuration, and runtime provenance.
+
+Run the material evaluation once from the project environment:
+
+```powershell
+& ".\.venv\Scripts\python.exe" evaluate_store_sales.py
+```
+
+The output is written atomically under
+`artifacts/evaluation/retail-history-eval-01-v1/` and remains excluded from Git.
+Its aggregate RMSLE gives every 16-day window equal weight, while aggregate
+WAPE and bias use pooled sales and errors. Zero-actual slices preserve
+undefined percentage metrics as unavailable values.
+
 Prepare the private deployment-only history without retraining or retuning:
 
 ```powershell
@@ -302,7 +326,7 @@ Git and the Docker image.
 Run the lightweight software-contract checks separately:
 
 ```powershell
-& ".\.venv\Scripts\python.exe" -m unittest -v test_store_sales_model.py
+& ".\.venv\Scripts\python.exe" -m unittest -v test_store_sales_model.py test_evaluate_store_sales.py
 ```
 
 The tests use synthetic tables and do not read private competition rows, fit a
@@ -310,7 +334,7 @@ model, or rerun hyperparameter tuning. They verify preprocessing semantics,
 valid inference, and rejection of malformed source events, horizons, keys,
 coverage, artifacts, and outputs.
 
-After the 44 core contracts and 5 optional demo checks pass, create a local key
+After the 60 core contracts and 5 optional demo checks pass, create a local key
 with at least 32 characters. Keep
 the value outside source code, shell commands, Docker images, and Git:
 
@@ -435,7 +459,7 @@ and zero runtime or model errors.
 ## Continuous integration
 
 The GitHub Actions workflow installs Python 3.12.10 with the constrained
-development environment, runs 44 core contracts plus 5 optional interview-demo
+development environment, runs 60 core contracts plus 5 optional interview-demo
 checks, builds the final runtime image, verifies its non-root user and reduced
 dependency boundary, and starts a private-data-free synthetic runtime until the
 container reports ready. The CI-only stage is separate from the final runtime
