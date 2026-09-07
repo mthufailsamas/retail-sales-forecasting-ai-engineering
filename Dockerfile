@@ -28,6 +28,7 @@ CMD ["python", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"
 
 FROM base AS ci-smoke
 
+RUN python -m pip install --no-cache-dir --constraint constraints.txt httpx2==2.12.0
 COPY --chown=retail:retail test_store_sales_model.py ./
 RUN python -c \
     "from pathlib import Path; from test_store_sales_model import prepare_container_smoke_runtime; prepare_container_smoke_runtime(Path('ci_runtime'))"
