@@ -20,7 +20,7 @@ consistent view of expected category demand before the next cycle begins.
 |---|---|
 | **Problem** | A single overall average cannot represent demand across 54 stores, 33 product families, promotions, holidays, and local operating conditions. |
 | **Solution** | A multi-source feature pipeline compares Ridge and XGBoost chronologically, then packages the selected model for batch and API inference. |
-| **Verified result** | The system generated 28,512 store-family forecasts with 15.6431% internal-test WAPE and 0.7623% signed bias; all 74 core contract tests passed locally and in GitHub Actions, and local API and Docker predictions matched the notebook batch exactly. |
+| **Verified result** | The accepted V1 generated 28,512 store-family forecasts with 15.6431% internal-test WAPE. Verified 4-fold selection produced a private candidate with 14.6689% internal-test WAPE; 75 core contracts pass locally and in GitHub Actions. |
 
 Demand moves differently across stores, product families, promotions, weekly
 patterns, and local events. The system handles that variation at the
@@ -62,7 +62,7 @@ validation window.
 | Internal-test WAPE | 15.6431% |
 | Internal-test signed bias | 0.7623% |
 | Kaggle inference rows written | 28,512 |
-| Core automated contract tests | 74/74 passed locally and in GitHub Actions |
+| Core automated contract tests | 75/75 passed locally and in GitHub Actions |
 | Optional interview-demo checks | 5/5 passed locally |
 | API batch verification | 28,512/28,512 predictions matched |
 | Local Docker verification | Healthy; 28,512/28,512 predictions matched |
@@ -74,9 +74,13 @@ healthy Docker container, with every prediction matching the notebook batch.
 
 Error analysis breaks the internal test down by forecast day, store, product
 family, promotion, and holiday status while leaving the selected model frozen.
-The S1 selection path now runs the same 30 configurations across 4 expanding
-validation folds; its material model-quality result is recorded only after the
-private workload completes.
+
+The verified S1 run evaluated all 30 configurations on 4 expanding folds and
+selected XGBoost with `learning_rate=0.1`, `max_depth=8`, and
+`n_estimators=500`. Its mean fold RMSLE was 0.5246 versus 0.5334 for the V1
+configuration, with RMSLE dispersion reduced from 0.1186 to 0.1059. On the
+protected internal test, the candidate recorded 0.4077 RMSLE, 14.6689% WAPE,
+and -0.2556% signed bias. The candidate remains private until promotion.
 
 ## Technology stack
 
@@ -338,10 +342,11 @@ while adding explicit operating scenarios to the rolling-origin design. The
 lowest mean validation RMSLE selects the configuration before the protected
 internal test is opened.
 
-Run the material evaluation once from the project environment:
+The material evaluation is complete. A different identified run can be started
+from the project environment when a new experiment is intentionally approved:
 
 ```powershell
-& ".\.venv\Scripts\python.exe" evaluate_store_sales.py
+& ".\.venv\Scripts\python.exe" evaluate_store_sales.py --run-id "new-approved-run-id"
 ```
 
 The output is written atomically under
@@ -351,6 +356,12 @@ fold predictions and diagnostics, internal-test evidence, candidate artifact,
 Kaggle forecast and submission, input and code fingerprints, configuration,
 timing, and runtime provenance. The accepted V1 artifact and public demo remain
 unchanged until the candidate evidence is reviewed.
+
+The verified S1 bundle contains all 120 candidate-fold scores, all 30 ranked
+candidates, matching input/code/output hashes, and all 28,512 Kaggle rows. The
+selected candidate lowered mean fold RMSLE by 1.64%, reduced fold RMSLE
+dispersion by 10.69%, and lowered internal-test WAPE by 0.9742 percentage
+points relative to the accepted V1 evidence.
 
 Prepare the private deployment-only history without retraining or retuning:
 
@@ -375,7 +386,7 @@ model, or rerun hyperparameter tuning. They verify preprocessing semantics,
 valid inference, and rejection of malformed source events, horizons, keys,
 coverage, artifacts, and outputs.
 
-After the 74 core contracts and 5 optional demo checks pass, create a local key
+After the 75 core contracts and 5 optional demo checks pass, create a local key
 with at least 32 characters. Keep
 the value outside source code, shell commands, Docker images, and Git:
 
@@ -500,7 +511,7 @@ and zero runtime or model errors.
 ## Continuous integration
 
 The GitHub Actions workflow installs Python 3.12.10 with the constrained
-development environment, runs 74 core contracts plus 5 optional interview-demo
+development environment, runs 75 core contracts plus 5 optional interview-demo
 checks, builds the final runtime image, verifies its non-root user and reduced
 dependency boundary, and starts a private-data-free synthetic runtime until the
 container reports ready. The CI-only stage is separate from the final runtime

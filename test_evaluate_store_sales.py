@@ -691,6 +691,21 @@ class MetricAndOutputTests(unittest.TestCase):
             self.assertFalse((output_root / ".bad-run.tmp").exists())
             self.assertFalse((output_root / "bad-run").exists())
 
+            foreign_temporary = output_root / ".busy-run.tmp"
+            foreign_temporary.mkdir()
+            sentinel = foreign_temporary / "owned-by-another-process.txt"
+            sentinel.write_text("keep", encoding="utf-8")
+            with self.assertRaises(FileExistsError):
+                evaluator.write_evaluation_bundle(
+                    output_root,
+                    "busy-run",
+                    predictions,
+                    metrics,
+                    diagnostics,
+                    manifest,
+                )
+            self.assertTrue(sentinel.is_file())
+
     def test_output_bundle_can_publish_the_private_candidate_tables(self) -> None:
         predictions = make_prediction_rows(["2024-01-11"])
         diagnostics = pd.DataFrame({"slice_type": ["store"], "slice_value": ["1"]})
@@ -735,6 +750,21 @@ class MetricAndOutputTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as outside:
             with self.assertRaisesRegex(ValueError, "inside the project"):
                 evaluator.require_project_path(Path(outside), "Test path")
+
+    def test_existing_run_is_rejected_before_loading_training_data(self) -> None:
+        with tempfile.TemporaryDirectory(dir=evaluator.PROJECT_ROOT) as temporary_root:
+            output_root = Path(temporary_root) / "evaluation"
+            (output_root / "existing-run").mkdir(parents=True)
+            with (
+                patch.object(evaluator, "read_processed_table") as reader,
+                self.assertRaisesRegex(FileExistsError, "existing-run"),
+            ):
+                evaluator.run_historical_evaluation(
+                    output_root=output_root,
+                    run_id="existing-run",
+                )
+
+            reader.assert_not_called()
 
 
 if __name__ == "__main__":

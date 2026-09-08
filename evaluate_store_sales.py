@@ -437,6 +437,25 @@ def require_project_path(path: Path, label: str) -> Path:
     return resolved
 
 
+def require_available_output_paths(
+    output_root: Path,
+    run_id: str,
+) -> tuple[Path, Path, Path]:
+    """Resolve one run destination and reject existing final or temporary output."""
+    run_id = validate_run_id(run_id)
+    root = require_project_path(output_root, "Evaluation output root")
+    final_directory = (root / run_id).resolve()
+    temporary_directory = (root / f".{run_id}.tmp").resolve()
+    if final_directory.parent != root or temporary_directory.parent != root:
+        raise ValueError("Evaluation run directory escaped its output root.")
+    if final_directory.exists() or temporary_directory.exists():
+        raise FileExistsError(
+            f"Evaluation output already exists for run ID {run_id}. "
+            "Inspect it or choose a new --run-id; existing runs are never overwritten."
+        )
+    return root, final_directory, temporary_directory
+
+
 def sha256_file(path: Path, chunk_size: int = 1_048_576) -> str:
     """Hash a file without loading the complete content into memory."""
     digest = hashlib.sha256()
@@ -1172,20 +1191,15 @@ def write_evaluation_bundle(
     kaggle_submission: pd.DataFrame | None = None,
 ) -> Path:
     """Publish all evaluation files together or leave no partial final run."""
-    run_id = validate_run_id(run_id)
-    root = require_project_path(output_root, "Evaluation output root")
-    final_directory = (root / run_id).resolve()
-    temporary_directory = (root / f".{run_id}.tmp").resolve()
-    if final_directory.parent != root or temporary_directory.parent != root:
-        raise ValueError("Evaluation run directory escaped its output root.")
-    if final_directory.exists() or temporary_directory.exists():
-        raise FileExistsError(
-            f"Evaluation output already exists for run ID {run_id}."
-        )
+    root, final_directory, temporary_directory = require_available_output_paths(
+        output_root, run_id
+    )
 
     root.mkdir(parents=True, exist_ok=True)
-    temporary_directory.mkdir()
+    temporary_created = False
     try:
+        temporary_directory.mkdir()
+        temporary_created = True
         predictions_path = temporary_directory / "predictions.csv.gz"
         metrics_path = temporary_directory / "metrics.json"
         diagnostics_path = temporary_directory / "diagnostics.csv.gz"
@@ -1258,7 +1272,8 @@ def write_evaluation_bundle(
         )
         temporary_directory.replace(final_directory)
     except Exception:
-        shutil.rmtree(temporary_directory, ignore_errors=True)
+        if temporary_created:
+            shutil.rmtree(temporary_directory, ignore_errors=True)
         raise
     return final_directory
 
@@ -1282,6 +1297,7 @@ def run_historical_evaluation(
     )
     output_root = require_project_path(output_root, "Evaluation output root")
     validate_run_id(run_id)
+    require_available_output_paths(output_root, run_id)
     input_paths = [labeled_path, future_path, sample_submission_path]
     missing_inputs = [str(path) for path in input_paths if not path.is_file()]
     if missing_inputs:
