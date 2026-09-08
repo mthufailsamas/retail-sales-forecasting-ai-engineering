@@ -45,17 +45,18 @@ DEFAULT_FUTURE_PATH = (
     PROJECT_ROOT / "data" / "processed" / "01_STORE_SALES_KAGGLE_TEST.csv"
 )
 DEFAULT_ARTIFACT_PATH = (
-    PROJECT_ROOT / "artifacts" / "store_sales_forecast_v1.pkl"
+    PROJECT_ROOT / "artifacts" / "store_sales_forecast_v2.pkl"
 )
 DEFAULT_DEPLOYMENT_HISTORY_PATH = (
-    PROJECT_ROOT / "artifacts" / "store_sales_forecast_v1_history.csv.gz"
+    PROJECT_ROOT / "artifacts" / "store_sales_forecast_v2_history.csv.gz"
 )
 DEFAULT_BATCH_OUTPUT_PATH = (
     PROJECT_ROOT / "data" / "processed" / "03_STORE_SALES_BATCH_FORECAST.csv"
 )
 
 ARTIFACT_SCHEMA_VERSION = 1
-MODEL_VERSION = "store-sales-forecast-v1"
+V1_MODEL_VERSION = "store-sales-forecast-v1"
+MODEL_VERSION = "store-sales-forecast-v2"
 FORECAST_HORIZON_DAYS = 16
 RANDOM_STATE = 42
 CURRENT_LIBRARY_VERSIONS = {
@@ -436,7 +437,7 @@ def evaluate_forecast(
 
 
 def validate_model_features(table: pd.DataFrame, table_name: str) -> None:
-    """Require the complete frozen v1 model allowlist."""
+    """Require the complete accepted model-feature allowlist."""
     missing_columns = [column for column in MODEL_FEATURES if column not in table]
     if missing_columns:
         raise ValueError(f"{table_name} is missing model features: {missing_columns}")
@@ -579,7 +580,11 @@ def fit_forecast_bundle(
     }
 
 
-def validate_forecast_bundle(bundle: dict[str, Any]) -> None:
+def validate_forecast_bundle(
+    bundle: dict[str, Any],
+    *,
+    expected_model_version: str = MODEL_VERSION,
+) -> None:
     """Reject an artifact that differs from the current executable contract."""
     required_keys = {"artifact_schema_version", "metadata", "processor", "model"}
     if set(bundle) != required_keys:
@@ -591,12 +596,12 @@ def validate_forecast_bundle(bundle: dict[str, Any]) -> None:
     if bundle["artifact_schema_version"] != ARTIFACT_SCHEMA_VERSION:
         raise ValueError("Forecast artifact schema version is unsupported.")
     metadata = bundle["metadata"]
-    if metadata.get("model_version") != MODEL_VERSION:
+    if metadata.get("model_version") != expected_model_version:
         raise ValueError("Forecast artifact model version is unsupported.")
     if metadata.get("model_features") != MODEL_FEATURES:
-        raise ValueError("Forecast artifact feature order differs from the v1 contract.")
+        raise ValueError("Forecast artifact feature order differs from the model contract.")
     if metadata.get("forecast_horizon_days") != FORECAST_HORIZON_DAYS:
-        raise ValueError("Forecast artifact horizon differs from the v1 contract.")
+        raise ValueError("Forecast artifact horizon differs from the model contract.")
     if metadata.get("library_versions") != CURRENT_LIBRARY_VERSIONS:
         raise ValueError(
             "Forecast artifact library versions differ from the current environment."
@@ -674,6 +679,8 @@ def save_forecast_artifact(
 
 def load_forecast_artifact(
     artifact_path: Path = DEFAULT_ARTIFACT_PATH,
+    *,
+    expected_model_version: str = MODEL_VERSION,
 ) -> dict[str, Any]:
     """Load a trusted project artifact; never load an untrusted pickle file."""
     artifact_path = _require_project_path(artifact_path, "Artifact path")
@@ -681,8 +688,48 @@ def load_forecast_artifact(
         raise FileNotFoundError(f"Forecast artifact not found: {artifact_path}")
     with artifact_path.open("rb") as handle:
         bundle = pickle.load(handle)
-    validate_forecast_bundle(bundle)
+    validate_forecast_bundle(
+        bundle,
+        expected_model_version=expected_model_version,
+    )
     return bundle
+
+
+def promote_forecast_bundle(
+    candidate_bundle: dict[str, Any],
+    *,
+    source_model_version: str,
+    promotion_reference: dict[str, Any],
+) -> dict[str, Any]:
+    """Create the active-version view of one verified trained candidate."""
+    validate_forecast_bundle(
+        candidate_bundle,
+        expected_model_version=source_model_version,
+    )
+    if source_model_version not in {V1_MODEL_VERSION, MODEL_VERSION}:
+        raise ValueError("Candidate uses an unsupported source model version.")
+    if "promotion_reference" in candidate_bundle["metadata"]:
+        raise ValueError("Candidate has already been promoted.")
+    required_reference = {
+        "source_contract_id",
+        "source_run_id",
+        "selected_run_id",
+        "source_artifact_sha256",
+        "source_model_version",
+        "promoted_at_utc",
+    }
+    if set(promotion_reference) != required_reference or any(
+        not promotion_reference[key] for key in required_reference
+    ):
+        raise ValueError("Promotion reference is incomplete.")
+
+    promoted_bundle = dict(candidate_bundle)
+    promoted_metadata = dict(candidate_bundle["metadata"])
+    promoted_metadata["model_version"] = MODEL_VERSION
+    promoted_metadata["promotion_reference"] = dict(promotion_reference)
+    promoted_bundle["metadata"] = promoted_metadata
+    validate_forecast_bundle(promoted_bundle)
+    return promoted_bundle
 
 
 def write_batch_forecast(

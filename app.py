@@ -601,7 +601,7 @@ DemoModeDependency = Annotated[None, Depends(require_demo_mode)]
 
 app = FastAPI(
     title="Retail Sales Forecasting API",
-    version="1.0.0",
+    version="2.0.0",
     description=(
         "Scores one complete 16-day store-and-product-family batch with the "
         "versioned XGBoost forecast artifact."

@@ -19,8 +19,8 @@ consistent view of expected category demand before the next cycle begins.
 | | Summary |
 |---|---|
 | **Problem** | A single overall average cannot represent demand across 54 stores, 33 product families, promotions, holidays, and local operating conditions. |
-| **Solution** | A multi-source feature pipeline compares Ridge and XGBoost chronologically, then packages the selected model for batch and API inference. |
-| **Verified result** | The accepted V1 generated 28,512 store-family forecasts with 15.6431% internal-test WAPE. Verified 4-fold selection produced a private candidate with 14.6689% internal-test WAPE; 75 core contracts pass locally and in GitHub Actions. |
+| **Solution** | A multi-source feature pipeline evaluates 3 Ridge and 27 XGBoost configurations across 4 chronological folds, then packages the selected model for batch and API inference. |
+| **Verified result** | The active V2 model generated 28,512 store-family forecasts with 14.6689% protected internal-test WAPE. Its model, promotion, API, monitoring, and demo contracts are covered by 78 synthetic checks. |
 
 Demand moves differently across stores, product families, promotions, weekly
 patterns, and local events. The system handles that variation at the
@@ -34,8 +34,7 @@ flowchart LR
     A["6 modeling inputs + submission schema"] --> B["Validated preprocessing"]
     B --> C["Training-only EDA"]
     C --> D["Cutoff-aligned feature engineering"]
-    D --> E["Chronological model comparison"]
-    E --> L["4-fold candidate selection"]
+    D --> E["4-fold chronological model selection"]
     E --> F["Versioned XGBoost artifact"]
     F --> G["Authenticated FastAPI batch inference"]
     G --> H["Docker container"]
@@ -46,27 +45,27 @@ flowchart LR
 
 ## Verified results
 
-The accepted V1 workflow processed 3,000,888 labeled rows and 28,512 Kaggle
+The workflow processed 3,000,888 labeled rows and 28,512 Kaggle
 inference rows across 54 stores, 33 product families, and 1,782 store-family
 series. It applied the same 16-day information cutoff to sales, transactions,
-and oil, then evaluated 3 Ridge and 27 XGBoost configurations on the fixed
-validation window.
+and oil, then evaluated 3 Ridge and 27 XGBoost configurations across 4
+expanding chronological folds.
 
 | Evidence | Result |
 |---|---:|
-| Best validation method | XGBoost Regression |
-| Selected parameters | `learning_rate=0.05`, `max_depth=8`, `n_estimators=500` |
-| Validation RMSLE | 0.4131 |
-| Validation WAPE | 13.5188% |
-| Internal-test RMSLE | 0.4140 |
-| Internal-test WAPE | 15.6431% |
-| Internal-test signed bias | 0.7623% |
+| Selected method | XGBoost Regression |
+| Selected parameters | `learning_rate=0.1`, `max_depth=8`, `n_estimators=500` |
+| 4-fold mean RMSLE | 0.5246 |
+| 4-fold RMSLE standard deviation | 0.1059 |
+| 4-fold mean WAPE | 15.2366% |
+| Protected internal-test RMSLE | 0.4077 |
+| Protected internal-test WAPE | 14.6689% |
+| Protected internal-test signed bias | -0.2556% |
 | Kaggle inference rows written | 28,512 |
-| Core automated contract tests | 75/75 passed locally and in GitHub Actions |
-| Optional interview-demo checks | 5/5 passed locally |
+| Automated synthetic checks | 78/78 passed locally: 73 core + 5 demo checks |
 | API batch verification | 28,512/28,512 predictions matched |
 | Local Docker verification | Healthy; 28,512/28,512 predictions matched |
-| GitHub Actions CI | Python contracts and non-root container readiness |
+| GitHub Actions CI | Python contracts, non-root container, and readiness checks |
 
 The selected pipeline was serialized, reloaded in a fresh process, and used to
 generate the full 28,512-row batch. The same artifact ran through FastAPI and a
@@ -75,12 +74,11 @@ healthy Docker container, with every prediction matching the notebook batch.
 Error analysis breaks the internal test down by forecast day, store, product
 family, promotion, and holiday status while leaving the selected model frozen.
 
-The verified S1 run evaluated all 30 configurations on 4 expanding folds and
-selected XGBoost with `learning_rate=0.1`, `max_depth=8`, and
-`n_estimators=500`. Its mean fold RMSLE was 0.5246 versus 0.5334 for the V1
-configuration, with RMSLE dispersion reduced from 0.1186 to 0.1059. On the
-protected internal test, the candidate recorded 0.4077 RMSLE, 14.6689% WAPE,
-and -0.2556% signed bias. The candidate remains private until promotion.
+The active V2 model was selected from all 30 configurations on 4 expanding
+folds. Its mean fold RMSLE was 0.5246 versus 0.5334 for the V1 configuration,
+with RMSLE dispersion reduced from 0.1186 to 0.1059. On the protected internal
+test, it recorded 0.4077 RMSLE, 14.6689% WAPE, and -0.2556% signed bias. The V1
+artifact remains available privately as the baseline and rollback path.
 
 ## Technology stack
 
@@ -129,7 +127,7 @@ the data.
 
 ## Evaluation design
 
-The accepted V1 evidence used this fixed split:
+The V1 reference used this fixed split:
 
 | Split | Date range | Use |
 |---|---|---|
@@ -152,7 +150,7 @@ S1 strengthens model selection with this expanding-window sequence:
 | Fold W3 | 2013-02-06 to 2017-02-15 | 2017-02-16 to 2017-03-03 | holiday stress |
 | Fold W4 | 2013-02-06 to 2017-06-28 | 2017-06-29 to 2017-07-14 | recent operating context |
 | Internal test | 2013-02-06 to 2017-07-30 | 2017-07-31 to 2017-08-15 | score the frozen selection once |
-| Final refit | 2013-02-06 to 2017-08-15 | 2017-08-16 to 2017-08-31 | create the private Kaggle candidate |
+| Final refit | 2013-02-06 to 2017-08-15 | 2017-08-16 to 2017-08-31 | create the active V2 forecast |
 
 All 3 Ridge and 27 XGBoost configurations use the same 4 folds. The lowest
 equal-fold mean RMSLE wins, with mean WAPE as the tie-breaker. The internal test
@@ -175,7 +173,7 @@ Dockerfile                        Reproducible local API image
                                   Private-data-free CI contract tests
 store_sales_preprocessing.py    Reusable raw-to-processed logic
 store_sales_model.py             Model artifact and 16-day batch inference
-evaluate_store_sales.py          4-fold model selection and private candidate build
+evaluate_store_sales.py          4-fold model selection and verified V2 promotion
 test_store_sales_model.py        Synthetic automated contract tests
 test_evaluate_store_sales.py     Historical-evaluation contract tests
 verify_api.py                    Live full-batch API verification client
@@ -193,8 +191,7 @@ tables, plots, metrics, model artifact, and forecast files.
 ## Optional interview demo
 
 This role-based local workspace supports interviews and repository reviews
-without changing the V1 model, forecast contract, artifact, metrics, or core
-engineering evidence.
+through the verified artifact, forecast contract, and operational evidence.
 
 After the local environment, private artifact, compact runtime history, and
 Docker image have been prepared once, the complete demonstration starts with
@@ -214,7 +211,7 @@ as CSV. The AI Engineering Operations workspace presents the loaded artifact,
 contract checks, latency, rejections, and model-error counters in a separate
 role view.
 
-The accepted model stays frozen. Private source data and artifacts remain on
+The selected model stays frozen during the demonstration. Private source data and artifacts remain on
 read-only mounts, and the temporary key is removed from the launching
 PowerShell environment after setup. If startup or verification fails, the
 launcher removes the incomplete demo container.
@@ -274,7 +271,8 @@ Expand-Archive -LiteralPath "data\raw\store-sales-time-series-forecasting.zip" -
 Remove-Item -LiteralPath "data\raw\store-sales-time-series-forecasting.zip"
 ```
 
-Open the notebooks from the project root and run them in this order:
+Open the notebooks from the project root. Run notebooks 01 and 02, execute the
+4-fold evaluator documented below, then run notebook 03:
 
 1. `01_STORE_SALES_PREPROCESSING.ipynb`
 2. `02_STORE_SALES_EDA.ipynb`
@@ -295,12 +293,11 @@ can be run with:
 .\.venv\Scripts\python.exe store_sales_preprocessing.py --overwrite
 ```
 
-The modeling notebook evaluates 3 Ridge settings and 27 XGBoost settings
-on the fixed validation window. It intentionally avoids ordinary K-Fold because
-the experiment must preserve chronological order. The final section saves and
-reloads the selected processor and model before writing both a planning-friendly
-batch forecast and the Kaggle submission. This stage can take substantial time
-on local hardware.
+The modeling notebook reproduces the original single-window V1 reference and
+its error diagnostics. Its final section verifies and promotes the 4-fold S1
+winner as V2, reloads the active artifact, and writes both a planning-friendly
+batch forecast and the Kaggle submission. The material 4-fold search runs in
+`evaluate_store_sales.py` and can take substantial time on local hardware.
 
 After notebook 03 creates the private artifact, verify inference from a fresh
 process:
@@ -354,14 +351,26 @@ The output is written atomically under
 from Git. It contains the 120 fold scores, ranked candidate summary, selected
 fold predictions and diagnostics, internal-test evidence, candidate artifact,
 Kaggle forecast and submission, input and code fingerprints, configuration,
-timing, and runtime provenance. The accepted V1 artifact and public demo remain
-unchanged until the candidate evidence is reviewed.
+timing, and runtime provenance. The run ID remains stable because it identifies
+the preserved evaluation evidence used for the V2 decision.
 
 The verified S1 bundle contains all 120 candidate-fold scores, all 30 ranked
 candidates, matching input/code/output hashes, and all 28,512 Kaggle rows. The
 selected candidate lowered mean fold RMSLE by 1.64%, reduced fold RMSLE
 dispersion by 10.69%, and lowered internal-test WAPE by 0.9742 percentage
 points relative to the accepted V1 evidence.
+
+Promote that verified run into the active V2 artifact and regenerate its
+serving history, planning batch, and Kaggle submission:
+
+```powershell
+& ".\.venv\Scripts\python.exe" evaluate_store_sales.py --promote-run-directory "artifacts\evaluation\retail-history-selection-01-v1" --overwrite-promotion
+```
+
+Promotion verifies every source hash, the recorded winning configuration, all
+28,512 business keys, and canonical prediction values before replacing any
+V2 output. The V1 source artifact remains unchanged for provenance and
+rollback.
 
 Prepare the private deployment-only history without retraining or retuning:
 
@@ -386,7 +395,7 @@ model, or rerun hyperparameter tuning. They verify preprocessing semantics,
 valid inference, and rejection of malformed source events, horizons, keys,
 coverage, artifacts, and outputs.
 
-After the 75 core contracts and 5 optional demo checks pass, create a local key
+After all 78 synthetic checks pass, create a local key
 with at least 32 characters. Keep
 the value outside source code, shell commands, Docker images, and Git:
 
@@ -446,7 +455,7 @@ Stop the standalone Uvicorn process first so port 8000 is available, then build
 the image:
 
 ```powershell
-docker build --tag retail-sales-forecast-api:v1 .
+docker build --tag retail-sales-forecast-api:v2 .
 ```
 
 From the project root, generate a process-local key without printing it, then
@@ -465,7 +474,7 @@ read-only. The 2 path variables keep the private runtime boundary portable
 without embedding the model or its history in the image:
 
 ```powershell
-docker run --rm --detach --name retail-sales-forecast-api --publish 127.0.0.1:8000:8000 --env RETAIL_FORECAST_API_KEY --env RETAIL_FORECAST_ARTIFACT_PATH=/app/private/store_sales_forecast_v1.pkl --env RETAIL_FORECAST_HISTORY_PATH=/app/private/store_sales_forecast_v1_history.csv.gz --mount "type=bind,source=$projectPath\artifacts,target=/app/private,readonly" retail-sales-forecast-api:v1
+docker run --rm --detach --name retail-sales-forecast-api --publish 127.0.0.1:8000:8000 --env RETAIL_FORECAST_API_KEY --env RETAIL_FORECAST_ARTIFACT_PATH=/app/private/store_sales_forecast_v2.pkl --env RETAIL_FORECAST_HISTORY_PATH=/app/private/store_sales_forecast_v2_history.csv.gz --mount "type=bind,source=$projectPath\artifacts,target=/app/private,readonly" retail-sales-forecast-api:v2
 ```
 
 From the same terminal, check the Docker health status and run the same
@@ -491,8 +500,8 @@ request ID, HTTP method, endpoint path, response status, latency in milliseconds
 and forecast row count. The same request ID is returned through the
 `X-Request-ID` response header.
 
-The container verification recorded a 200 response for all 28,512 forecast
-rows in 2,181.268 milliseconds. Request rows, product families, predictions,
+The V2 container verification recorded a 200 response for all 28,512
+forecast rows in 1,745.853 milliseconds. Request rows, product families, predictions,
 credentials, artifact contents, and local paths are excluded from the logs.
 Uvicorn's duplicate access log is disabled in the documented commands.
 
@@ -511,8 +520,8 @@ and zero runtime or model errors.
 ## Continuous integration
 
 The GitHub Actions workflow installs Python 3.12.10 with the constrained
-development environment, runs 75 core contracts plus 5 optional interview-demo
-checks, builds the final runtime image, verifies its non-root user and reduced
+development environment, runs all 78 synthetic checks, builds the final runtime
+image, verifies its non-root user and reduced
 dependency boundary, and starts a private-data-free synthetic runtime until the
 container reports ready. The CI-only stage is separate from the final runtime
 image and does not contain competition data or the fitted retail artifact.

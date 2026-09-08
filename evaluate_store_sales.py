@@ -1,9 +1,9 @@
-"""Select and evaluate a Store Sales model over four forecast origins.
+"""Select, evaluate, and promote a Store Sales forecasting candidate.
 
 The command evaluates the frozen Ridge and XGBoost search space on four
 expanding 16-day folds, freezes the lowest mean-RMSLE configuration, scores it
-on the internal holdout, and writes a private candidate bundle without
-replacing the accepted V1 artifact.
+on the internal holdout, and writes a private candidate bundle. Promotion is a
+separate verified operation that activates the accepted candidate as V2.
 """
 
 from __future__ import annotations
@@ -29,25 +29,35 @@ import store_sales_model
 import store_sales_preprocessing
 from store_sales_model import (
     CURRENT_LIBRARY_VERSIONS,
+    DEFAULT_ARTIFACT_PATH,
+    DEFAULT_BATCH_OUTPUT_PATH,
+    DEFAULT_DEPLOYMENT_HISTORY_PATH,
     DEFAULT_FUTURE_PATH,
     DEFAULT_HISTORY_PATH,
     FORECAST_HORIZON_DAYS,
+    MODEL_VERSION,
     MODEL_FEATURES,
     MODEL_GRIDS,
     PROJECT_ROOT,
     SALES_LAGS,
+    V1_MODEL_VERSION,
     add_exact_sales_lags,
     build_model,
     evaluate_forecast,
     find_model_start,
     fit_forecast_bundle,
     is_default_reference,
+    load_forecast_artifact,
     make_feature_processor,
     predict_forecast,
+    promote_forecast_bundle,
+    read_inference_history,
     read_processed_table,
     save_forecast_artifact,
     validate_forecast_window,
     validate_store_family_coverage,
+    write_batch_forecast,
+    write_deployment_history,
 )
 from store_sales_preprocessing import BASE_KEY
 
@@ -56,6 +66,17 @@ CONTRACT_ID = "retail-history-selection-01"
 DEFAULT_RUN_ID = f"{CONTRACT_ID}-v1"
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "artifacts" / "evaluation"
 DEFAULT_SAMPLE_SUBMISSION_PATH = PROJECT_ROOT / "data" / "raw" / "sample_submission.csv"
+DEFAULT_PROMOTION_RUN_DIRECTORY = DEFAULT_OUTPUT_ROOT / DEFAULT_RUN_ID
+DEFAULT_PROMOTION_SUBMISSION_PATH = (
+    PROJECT_ROOT / "data" / "processed" / "02_STORE_SALES_KAGGLE_SUBMISSION.csv"
+)
+PROMOTION_REQUIRED_OUTPUTS = {
+    "candidate_model.pkl",
+    "candidate_model.json",
+    "kaggle_forecast.csv.gz",
+    "kaggle_submission.csv",
+    "metrics.json",
+}
 V1_MODEL_NAME = "xgboost_v1"
 SELECTED_MODEL_NAME = "selected_cv_model"
 SEASONAL_NAIVE_NAME = "weekly_seasonal_naive"
@@ -480,6 +501,264 @@ def make_json_safe(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     return repr(value)
+
+
+def read_json_object(path: Path, label: str) -> dict[str, Any]:
+    """Read one strict JSON object used as private evaluation evidence."""
+    if not path.is_file():
+        raise FileNotFoundError(f"{label} is missing: {path}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise ValueError(f"{label} is not valid JSON.") from error
+    if not isinstance(payload, dict):
+        raise ValueError(f"{label} must contain one JSON object.")
+    return payload
+
+
+def verify_evaluation_outputs(
+    run_directory: Path,
+    manifest: dict[str, Any],
+) -> None:
+    """Require every output recorded by the run manifest to remain unchanged."""
+    outputs = manifest.get("outputs")
+    if not isinstance(outputs, dict) or not PROMOTION_REQUIRED_OUTPUTS.issubset(outputs):
+        raise ValueError("Evaluation manifest does not contain the promotion outputs.")
+    for filename, evidence in outputs.items():
+        if not isinstance(filename, str) or not isinstance(evidence, dict):
+            raise ValueError("Evaluation manifest output evidence is malformed.")
+        output_path = (run_directory / filename).resolve()
+        if output_path.parent != run_directory or not output_path.is_file():
+            raise ValueError(f"Evaluation output is missing or unsafe: {filename}")
+        expected_size = evidence.get("bytes")
+        expected_sha256 = evidence.get("sha256")
+        if output_path.stat().st_size != expected_size:
+            raise ValueError(f"Evaluation output size differs from its manifest: {filename}")
+        if sha256_file(output_path) != expected_sha256:
+            raise ValueError(f"Evaluation output hash differs from its manifest: {filename}")
+
+
+def load_verified_promotion_source(
+    run_directory: Path,
+) -> tuple[dict[str, Any], pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+    """Load the selected candidate only after its complete run evidence passes."""
+    run_directory = require_project_path(run_directory, "Promotion run directory")
+    if not run_directory.is_dir():
+        raise FileNotFoundError(f"Promotion run directory is missing: {run_directory}")
+
+    manifest = read_json_object(run_directory / "manifest.json", "Evaluation manifest")
+    metrics = read_json_object(run_directory / "metrics.json", "Evaluation metrics")
+    if manifest.get("contract_id") != CONTRACT_ID or metrics.get("contract_id") != CONTRACT_ID:
+        raise ValueError("Promotion source uses an unexpected evaluation contract.")
+    if manifest.get("run_id") != run_directory.name or metrics.get("run_id") != run_directory.name:
+        raise ValueError("Promotion source run ID is inconsistent.")
+    verify_evaluation_outputs(run_directory, manifest)
+
+    candidate_metadata = read_json_object(
+        run_directory / "candidate_model.json",
+        "Candidate metadata",
+    )
+    source_model_version = candidate_metadata.get("model_version")
+    if source_model_version not in {V1_MODEL_VERSION, MODEL_VERSION}:
+        raise ValueError("Candidate uses an unsupported source model version.")
+    candidate_path = run_directory / "candidate_model.pkl"
+    candidate_bundle = load_forecast_artifact(
+        candidate_path,
+        expected_model_version=source_model_version,
+    )
+    if candidate_metadata != candidate_bundle["metadata"]:
+        raise ValueError("Candidate metadata differs from its serialized artifact.")
+
+    selection = metrics.get("selection")
+    selected = selection.get("selected") if isinstance(selection, dict) else None
+    reference = candidate_metadata.get("reference_evaluation")
+    if not isinstance(selected, dict) or not isinstance(reference, dict):
+        raise ValueError("Candidate selection evidence is incomplete.")
+    selected_run_id = selected.get("run_id")
+    selected_parameters = selected.get("parameters_json")
+    try:
+        selected_parameters = json.loads(selected_parameters)
+    except (TypeError, json.JSONDecodeError) as error:
+        raise ValueError("Selected candidate parameters are invalid.") from error
+    if (
+        reference.get("selected_run_id") != selected_run_id
+        or candidate_metadata.get("method") != selected.get("method")
+        or candidate_metadata.get("parameters") != selected_parameters
+    ):
+        raise ValueError("Candidate artifact differs from the recorded selection winner.")
+
+    candidate_forecast = pd.read_csv(
+        run_directory / "kaggle_forecast.csv.gz",
+        parse_dates=["date"],
+    )
+    candidate_submission = pd.read_csv(run_directory / "kaggle_submission.csv")
+    expected_forecast_columns = [
+        "id",
+        "date",
+        "store_nbr",
+        "family",
+        "forecast_sales",
+    ]
+    if candidate_forecast.columns.tolist() != expected_forecast_columns:
+        raise ValueError("Candidate forecast differs from the batch-output contract.")
+    if candidate_submission.columns.tolist() != ["id", "sales"]:
+        raise ValueError("Candidate submission differs from the Kaggle output contract.")
+    if len(candidate_forecast) != 28_512 or len(candidate_submission) != 28_512:
+        raise ValueError("Promotion source does not contain all 28,512 forecast rows.")
+    if not np.array_equal(
+        candidate_forecast["id"].to_numpy(),
+        candidate_submission["id"].to_numpy(),
+    ):
+        raise ValueError("Candidate forecast and submission IDs differ.")
+    return candidate_bundle, candidate_forecast, candidate_submission, manifest
+
+
+def write_submission(
+    submission: pd.DataFrame,
+    output_path: Path,
+    *,
+    overwrite: bool = False,
+) -> Path:
+    """Write one checked Kaggle submission with atomic replacement."""
+    if submission.columns.tolist() != ["id", "sales"] or submission.empty:
+        raise ValueError("Kaggle submission differs from its output contract.")
+    values = submission["sales"].to_numpy(dtype=np.float64)
+    if not np.isfinite(values).all() or (values < 0).any():
+        raise ValueError("Kaggle submission contains an invalid prediction.")
+    output_path = require_project_path(output_path, "Kaggle submission path")
+    if output_path.exists() and not overwrite:
+        raise FileExistsError(f"Kaggle submission already exists: {output_path}")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = output_path.with_name(f".{output_path.name}.tmp")
+    if temporary_path.exists():
+        raise FileExistsError(f"Temporary submission already exists: {temporary_path}")
+    try:
+        submission.to_csv(temporary_path, index=False)
+        temporary_path.replace(output_path)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+    return output_path
+
+
+def validate_promoted_forecast(
+    promoted_forecast: pd.DataFrame,
+    candidate_forecast: pd.DataFrame,
+) -> None:
+    """Require one promoted batch to reproduce the verified candidate values."""
+    identity_columns = ["id", "date", "store_nbr", "family"]
+    normalized_identities: list[pd.DataFrame] = []
+    for forecast in [promoted_forecast, candidate_forecast]:
+        identity = forecast[identity_columns].copy()
+        identity["id"] = identity["id"].astype("int64")
+        identity["date"] = pd.to_datetime(identity["date"])
+        identity["store_nbr"] = identity["store_nbr"].astype("int64")
+        identity["family"] = identity["family"].astype("string")
+        normalized_identities.append(identity.reset_index(drop=True))
+    try:
+        pd.testing.assert_frame_equal(
+            normalized_identities[0],
+            normalized_identities[1],
+            check_dtype=True,
+        )
+        promoted_values = [
+            "%.9g" % value
+            for value in promoted_forecast["forecast_sales"].to_numpy(
+                dtype=np.float64
+            )
+        ]
+        candidate_values = [
+            "%.9g" % value
+            for value in candidate_forecast["forecast_sales"].to_numpy(
+                dtype=np.float64
+            )
+        ]
+        if promoted_values != candidate_values:
+            raise AssertionError("Canonical prediction values differ.")
+    except AssertionError as error:
+        raise ValueError(
+            "Promoted forecast differs from the verified S1 candidate."
+        ) from error
+
+
+def promote_evaluation_run(
+    run_directory: Path = DEFAULT_PROMOTION_RUN_DIRECTORY,
+    history_path: Path = DEFAULT_HISTORY_PATH,
+    future_path: Path = DEFAULT_FUTURE_PATH,
+    artifact_path: Path = DEFAULT_ARTIFACT_PATH,
+    deployment_history_path: Path = DEFAULT_DEPLOYMENT_HISTORY_PATH,
+    batch_output_path: Path = DEFAULT_BATCH_OUTPUT_PATH,
+    submission_output_path: Path = DEFAULT_PROMOTION_SUBMISSION_PATH,
+    *,
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    """Activate one verified S1 candidate and rebuild its serving outputs."""
+    candidate_bundle, candidate_forecast, _, manifest = (
+        load_verified_promotion_source(run_directory)
+    )
+    source_hash = manifest["outputs"]["candidate_model.pkl"]["sha256"]
+    promotion_reference = {
+        "source_contract_id": manifest["contract_id"],
+        "source_run_id": manifest["run_id"],
+        "selected_run_id": candidate_bundle["metadata"]["reference_evaluation"][
+            "selected_run_id"
+        ],
+        "source_artifact_sha256": source_hash,
+        "source_model_version": candidate_bundle["metadata"]["model_version"],
+        "promoted_at_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    promoted_bundle = promote_forecast_bundle(
+        candidate_bundle,
+        source_model_version=promotion_reference["source_model_version"],
+        promotion_reference=promotion_reference,
+    )
+
+    training_end = pd.Timestamp(promoted_bundle["metadata"]["training_end"])
+    history_path = require_project_path(history_path, "Promotion history path")
+    future_path = require_project_path(future_path, "Promotion future path")
+    history = read_inference_history(history_path, training_end)
+    future = read_processed_table(future_path, has_target=False)
+    validate_store_family_coverage(future, history)
+    future_features = add_exact_sales_lags(future, history)
+    promoted_forecast = predict_forecast(promoted_bundle, future_features)
+
+    validate_promoted_forecast(promoted_forecast, candidate_forecast)
+
+    submission = candidate_forecast[["id"]].copy()
+    submission["sales"] = promoted_forecast["forecast_sales"].to_numpy(dtype=np.float32)
+    artifact_path, metadata_path = save_forecast_artifact(
+        promoted_bundle,
+        artifact_path,
+        overwrite=overwrite,
+    )
+    deployment_history_path = write_deployment_history(
+        history,
+        training_end,
+        deployment_history_path,
+        overwrite=overwrite,
+    )
+    batch_output_path = write_batch_forecast(
+        promoted_forecast,
+        batch_output_path,
+        overwrite=overwrite,
+    )
+    submission_output_path = write_submission(
+        submission,
+        submission_output_path,
+        overwrite=overwrite,
+    )
+    return {
+        "model_version": MODEL_VERSION,
+        "selected_run_id": promotion_reference["selected_run_id"],
+        "artifact_path": artifact_path,
+        "metadata_path": metadata_path,
+        "deployment_history_path": deployment_history_path,
+        "batch_output_path": batch_output_path,
+        "submission_output_path": submission_output_path,
+        "forecast_rows": len(promoted_forecast),
+        "forecast_start": promoted_forecast["date"].min().date().isoformat(),
+        "forecast_end": promoted_forecast["date"].max().date().isoformat(),
+    }
 
 
 def prediction_content_sha256(predictions: pd.DataFrame) -> str:
@@ -1508,7 +1787,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Select 1 of 30 configurations over 4 expanding validation folds, "
-            "score it once on the internal test, and write a private candidate."
+            "score it once on the internal test, or promote a verified candidate."
         )
     )
     parser.add_argument("--labeled-path", type=Path, default=DEFAULT_HISTORY_PATH)
@@ -1520,11 +1799,45 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--run-id", default=DEFAULT_RUN_ID)
+    parser.add_argument(
+        "--promote-run-directory",
+        type=Path,
+        help="Promote this completed S1 run instead of rerunning model selection.",
+    )
+    parser.add_argument(
+        "--promotion-history-path",
+        type=Path,
+        default=DEFAULT_HISTORY_PATH,
+        help="Full or compact labeled history ending at the candidate cutoff.",
+    )
+    parser.add_argument(
+        "--overwrite-promotion",
+        action="store_true",
+        help="Replace existing active private outputs during an approved promotion.",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    if args.promote_run_directory is not None:
+        result = promote_evaluation_run(
+            run_directory=args.promote_run_directory,
+            history_path=args.promotion_history_path,
+            overwrite=args.overwrite_promotion,
+        )
+        print("S1 candidate promotion: PASS", flush=True)
+        print(
+            f"Model: {result['model_version']} from {result['selected_run_id']}",
+            flush=True,
+        )
+        print(
+            f"Rows: {result['forecast_rows']:,}; dates: "
+            f"{result['forecast_start']} to {result['forecast_end']}",
+            flush=True,
+        )
+        print(f"Artifact: {result['artifact_path']}", flush=True)
+        return 0
     run_historical_evaluation(
         labeled_path=args.labeled_path,
         future_path=args.future_path,

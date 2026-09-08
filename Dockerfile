@@ -33,8 +33,8 @@ COPY --chown=retail:retail test_store_sales_model.py ./
 RUN python -c \
     "from pathlib import Path; from test_store_sales_model import prepare_container_smoke_runtime; prepare_container_smoke_runtime(Path('ci_runtime'))"
 
-ENV RETAIL_FORECAST_ARTIFACT_PATH=/app/ci_runtime/store_sales_forecast_v1.pkl \
-    RETAIL_FORECAST_HISTORY_PATH=/app/ci_runtime/store_sales_forecast_v1_history.csv.gz
+ENV RETAIL_FORECAST_ARTIFACT_PATH=/app/ci_runtime/store_sales_forecast_v2.pkl \
+    RETAIL_FORECAST_HISTORY_PATH=/app/ci_runtime/store_sales_forecast_v2_history.csv.gz
 
 USER retail
 

@@ -8,9 +8,9 @@ $ErrorActionPreference = "Stop"
 
 $projectRoot = Split-Path -Parent $PSCommandPath
 $pythonPath = Join-Path $projectRoot ".venv\Scripts\python.exe"
-$artifactPath = Join-Path $projectRoot "artifacts\store_sales_forecast_v1.pkl"
-$historyPath = Join-Path $projectRoot "artifacts\store_sales_forecast_v1_history.csv.gz"
-$imageName = "retail-sales-forecast-api:v1"
+$artifactPath = Join-Path $projectRoot "artifacts\store_sales_forecast_v2.pkl"
+$historyPath = Join-Path $projectRoot "artifacts\store_sales_forecast_v2_history.csv.gz"
+$imageName = "retail-sales-forecast-api:v2"
 $containerName = "retail-sales-forecast-api"
 $dashboardUrl = "http://127.0.0.1:8000/demo"
 
@@ -84,8 +84,8 @@ try {
         "--publish", "127.0.0.1:8000:8000",
         "--env", "RETAIL_FORECAST_API_KEY",
         "--env", "RETAIL_FORECAST_DEMO_MODE=1",
-        "--env", "RETAIL_FORECAST_ARTIFACT_PATH=/app/private/store_sales_forecast_v1.pkl",
-        "--env", "RETAIL_FORECAST_HISTORY_PATH=/app/private/store_sales_forecast_v1_history.csv.gz",
+        "--env", "RETAIL_FORECAST_ARTIFACT_PATH=/app/private/store_sales_forecast_v2.pkl",
+        "--env", "RETAIL_FORECAST_HISTORY_PATH=/app/private/store_sales_forecast_v2_history.csv.gz",
         "--mount", "type=bind,source=$projectRoot\artifacts,target=/app/private,readonly",
         $imageName
     )

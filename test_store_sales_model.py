@@ -46,9 +46,11 @@ from store_sales_model import (
     MODEL_VERSION,
     NUMERIC_FEATURES,
     PROJECT_ROOT,
+    V1_MODEL_VERSION,
     add_exact_sales_lags,
     load_forecast_artifact,
     predict_forecast,
+    promote_forecast_bundle,
     read_inference_history,
     save_forecast_artifact,
     validate_forecast_bundle,
@@ -184,8 +186,8 @@ def make_api_records() -> list[dict[str, object]]:
 
 def prepare_container_smoke_runtime(output_directory: Path) -> tuple[Path, Path]:
     """Write a private-data-free runtime used only by the CI container smoke."""
-    artifact_path = output_directory / "store_sales_forecast_v1.pkl"
-    history_path = output_directory / "store_sales_forecast_v1_history.csv.gz"
+    artifact_path = output_directory / "store_sales_forecast_v2.pkl"
+    history_path = output_directory / "store_sales_forecast_v2_history.csv.gz"
     saved_artifact, _ = save_forecast_artifact(
         make_bundle(),
         artifact_path,
@@ -556,6 +558,51 @@ class ArtifactAndPredictionContractTests(unittest.TestCase):
                 MODEL_VERSION,
             )
 
+    def test_verified_candidate_can_be_promoted_to_active_v2(self) -> None:
+        candidate = make_bundle()
+        candidate["metadata"]["model_version"] = V1_MODEL_VERSION
+        promotion_reference = {
+            "source_contract_id": "retail-history-selection-01",
+            "source_run_id": "retail-history-selection-01-v1",
+            "selected_run_id": "xgboost_18",
+            "source_artifact_sha256": "a" * 64,
+            "source_model_version": V1_MODEL_VERSION,
+            "promoted_at_utc": "2026-09-08T00:00:00+00:00",
+        }
+
+        promoted = promote_forecast_bundle(
+            candidate,
+            source_model_version=V1_MODEL_VERSION,
+            promotion_reference=promotion_reference,
+        )
+
+        self.assertEqual(promoted["metadata"]["model_version"], MODEL_VERSION)
+        self.assertEqual(
+            promoted["metadata"]["promotion_reference"],
+            promotion_reference,
+        )
+        self.assertEqual(
+            candidate["metadata"]["model_version"],
+            V1_MODEL_VERSION,
+        )
+        validate_forecast_bundle(promoted)
+
+        current_candidate = make_bundle()
+        current_reference = dict(promotion_reference)
+        current_reference["source_model_version"] = MODEL_VERSION
+        current_promoted = promote_forecast_bundle(
+            current_candidate,
+            source_model_version=MODEL_VERSION,
+            promotion_reference=current_reference,
+        )
+        self.assertEqual(current_promoted["metadata"]["model_version"], MODEL_VERSION)
+        with self.assertRaisesRegex(ValueError, "already been promoted"):
+            promote_forecast_bundle(
+                current_promoted,
+                source_model_version=MODEL_VERSION,
+                promotion_reference=current_reference,
+            )
+
 
 class InferenceHistoryContractTests(unittest.TestCase):
     def test_history_reader_keeps_only_the_required_columns(self) -> None:
@@ -780,7 +827,7 @@ class ForecastApiContractTests(unittest.TestCase):
         self.assertNotIn("Business problem", response.text)
         self.assertNotIn("System workflow", response.text)
         self.assertNotIn("Model evidence", response.text)
-        self.assertIn("44 + 5", response.text)
+        self.assertIn("73 + 5", response.text)
         self.assertIn("/demo/planning", response.text)
 
     def test_demo_summary_exposes_only_safe_runtime_aggregates(self) -> None:

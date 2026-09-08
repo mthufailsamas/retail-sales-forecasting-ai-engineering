@@ -766,6 +766,48 @@ class MetricAndOutputTests(unittest.TestCase):
 
             reader.assert_not_called()
 
+    def test_promotion_manifest_detects_changed_evaluation_output(self) -> None:
+        with tempfile.TemporaryDirectory(dir=evaluator.PROJECT_ROOT) as temporary_root:
+            run_directory = Path(temporary_root) / "verified-run"
+            run_directory.mkdir()
+            outputs: dict[str, dict[str, object]] = {}
+            for filename in sorted(evaluator.PROMOTION_REQUIRED_OUTPUTS):
+                path = run_directory / filename
+                path.write_bytes(filename.encode("utf-8"))
+                outputs[filename] = {
+                    "bytes": path.stat().st_size,
+                    "sha256": evaluator.sha256_file(path),
+                }
+            manifest = {"outputs": outputs}
+
+            evaluator.verify_evaluation_outputs(run_directory, manifest)
+            (run_directory / "candidate_model.json").write_text(
+                "changed",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "differs from its manifest"):
+                evaluator.verify_evaluation_outputs(run_directory, manifest)
+
+    def test_promoted_forecast_compares_normalized_business_identity(self) -> None:
+        candidate = make_prediction_rows(
+            ["2024-01-11"],
+            family="A",
+            values=[10697.4688],
+        )
+        promoted = candidate.copy()
+        promoted["family"] = promoted["family"].astype("category")
+        promoted["forecast_sales"] = 10697.46875
+
+        evaluator.validate_promoted_forecast(promoted, candidate)
+        promoted.loc[0, "store_nbr"] = 2
+        with self.assertRaisesRegex(ValueError, "differs from the verified"):
+            evaluator.validate_promoted_forecast(promoted, candidate)
+        promoted.loc[0, "store_nbr"] = candidate.loc[0, "store_nbr"]
+        promoted.loc[0, "forecast_sales"] = 10697.5
+        with self.assertRaisesRegex(ValueError, "differs from the verified"):
+            evaluator.validate_promoted_forecast(promoted, candidate)
+
 
 if __name__ == "__main__":
     unittest.main()
