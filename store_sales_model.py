@@ -327,8 +327,21 @@ def find_model_start(labeled_features: pd.DataFrame) -> pd.Timestamp:
     return pd.Timestamp(model_start)
 
 
-def make_feature_processor() -> ColumnTransformer:
-    """Build the train-fitted encoding, imputation, and scaling pipeline."""
+def make_feature_processor(
+    *,
+    categorical_features: list[str] | None = None,
+    numeric_features: list[str] | None = None,
+) -> ColumnTransformer:
+    """Build the train-fitted processor for an explicit feature contract."""
+    selected_categorical = list(
+        CATEGORICAL_FEATURES if categorical_features is None else categorical_features
+    )
+    selected_numeric = list(
+        NUMERIC_FEATURES if numeric_features is None else numeric_features
+    )
+    selected_features = [*selected_categorical, *selected_numeric]
+    if not selected_features or len(selected_features) != len(set(selected_features)):
+        raise ValueError("Processor features must be non-empty and unique.")
     categorical_pipeline = Pipeline(
         steps=[
             (
@@ -356,8 +369,8 @@ def make_feature_processor() -> ColumnTransformer:
     )
     return ColumnTransformer(
         transformers=[
-            ("categorical", categorical_pipeline, CATEGORICAL_FEATURES),
-            ("numeric", numeric_pipeline, NUMERIC_FEATURES),
+            ("categorical", categorical_pipeline, selected_categorical),
+            ("numeric", numeric_pipeline, selected_numeric),
         ],
         sparse_threshold=1.0,
         verbose_feature_names_out=False,

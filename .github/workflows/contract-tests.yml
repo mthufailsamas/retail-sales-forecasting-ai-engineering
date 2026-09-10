@@ -39,7 +39,7 @@ jobs:
           assert actual == expected, f'{actual} != {expected}'"
 
       - name: Run synthetic contract tests
-        run: python -m unittest -v test_store_sales_model.py test_evaluate_store_sales.py
+        run: python -m unittest -v test_store_sales_model.py test_evaluate_store_sales.py test_evaluate_store_sales_s2.py
 
       - name: Build the non-root runtime image
         run: docker build --target runtime --tag retail-sales-forecast-api:ci .
