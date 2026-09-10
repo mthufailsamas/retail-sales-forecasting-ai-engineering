@@ -1,4 +1,4 @@
-"""Synthetic contracts for the isolated S2-01 evaluator."""
+"""Synthetic contracts for the revised S2-01 evaluator."""
 
 from __future__ import annotations
 
@@ -11,10 +11,14 @@ from evaluate_store_sales import EVALUATION_WINDOWS, SEASONAL_NAIVE_NAME
 from evaluate_store_sales_s2 import (
     ACTIVE_MODEL_NAME,
     CHALLENGER_MODEL_NAME,
+    EXPECTED_CANDIDATES,
     FEATURE_NAME,
+    FEATURE_CONTROL_MODEL_NAME,
     MAX_FEATURE_BYTES,
+    MAX_FITS,
     add_sales_mean_lag_16_35,
     evaluate_s2_gate,
+    materialize_s2_fold_evidence,
     matrix_nbytes,
 )
 from store_sales_model import (
@@ -40,6 +44,18 @@ def make_history() -> pd.DataFrame:
 
 
 def make_gate_evidence(
+    feature_control_rmsle: tuple[float, float, float, float] = (
+        0.4,
+        0.4,
+        0.4,
+        0.6,
+    ),
+    feature_control_wape: tuple[float, float, float, float] = (
+        9.0,
+        9.0,
+        9.0,
+        9.0,
+    ),
     challenger_rmsle: tuple[float, float, float, float] = (0.4, 0.4, 0.4, 0.6),
     challenger_wape: tuple[float, float, float, float] = (9.0, 9.0, 9.0, 9.0),
 ) -> tuple[list[dict[str, object]], dict[str, dict[str, float]], dict[str, float]]:
@@ -60,6 +76,12 @@ def make_gate_evidence(
                     "wape_pct": 20.0,
                 },
                 {
+                    "model": FEATURE_CONTROL_MODEL_NAME,
+                    "window_id": window.window_id,
+                    "rmsle": feature_control_rmsle[index],
+                    "wape_pct": feature_control_wape[index],
+                },
+                {
                     "model": CHALLENGER_MODEL_NAME,
                     "window_id": window.window_id,
                     "rmsle": challenger_rmsle[index],
@@ -70,18 +92,23 @@ def make_gate_evidence(
     aggregates = {
         ACTIVE_MODEL_NAME: {"rmsle": 0.5, "wape_pct": 10.0},
         SEASONAL_NAIVE_NAME: {"rmsle": 0.7, "wape_pct": 20.0},
+        FEATURE_CONTROL_MODEL_NAME: {
+            "rmsle": float(np.mean(feature_control_rmsle)),
+            "wape_pct": float(np.mean(feature_control_wape)),
+        },
         CHALLENGER_MODEL_NAME: {
             "rmsle": float(np.mean(challenger_rmsle)),
             "wape_pct": float(np.mean(challenger_wape)),
         },
     }
     resources = {
-        "fit_count": 4,
+        "candidate_count": EXPECTED_CANDIDATES,
+        "fit_count": MAX_FITS,
         "added_feature_count": 1,
         "maximum_feature_bytes": MAX_FEATURE_BYTES,
-        "challenger_total_fit_seconds": 200.0,
+        "search_total_fit_seconds": 200.0,
         "maximum_total_fit_seconds": 300.0,
-        "challenger_mean_predict_seconds": 0.2,
+        "selected_mean_predict_seconds": 0.2,
         "maximum_mean_predict_seconds": 0.3,
     }
     return records, aggregates, resources
@@ -137,7 +164,10 @@ class SalesMeanLagFeatureTests(unittest.TestCase):
 
         result = add_sales_mean_lag_16_35(target, history)
 
-        self.assertAlmostEqual(float(result.loc[0, FEATURE_NAME]), sum(range(6, 25)) / 19)
+        self.assertAlmostEqual(
+            float(result.loc[0, FEATURE_NAME]),
+            sum(range(6, 25)) / 19,
+        )
 
     def test_feature_preserves_all_missing_window(self) -> None:
         history = make_history()
@@ -170,7 +200,7 @@ class S2GateTests(unittest.TestCase):
 
         self.assertTrue(gate["passed"])
         self.assertEqual(gate["decision"], "eligible_for_review")
-        self.assertEqual(gate["improved_rmsle_window_count"], 3)
+        self.assertEqual(gate["selected_improved_rmsle_window_count"], 3)
 
     def test_fewer_than_3_improved_windows_retains_v2(self) -> None:
         records, aggregates, resources = make_gate_evidence(
@@ -180,7 +210,9 @@ class S2GateTests(unittest.TestCase):
         gate = evaluate_s2_gate(records, aggregates, resources)
 
         self.assertFalse(gate["passed"])
-        self.assertFalse(gate["criteria"]["rmsle_improves_in_at_least_3_windows"])
+        self.assertFalse(
+            gate["criteria"]["selected_rmsle_improves_in_at_least_3_windows"]
+        )
         self.assertEqual(gate["decision"], "retain_active_v2")
 
     def test_worst_window_regression_retains_v2(self) -> None:
@@ -192,12 +224,35 @@ class S2GateTests(unittest.TestCase):
 
         self.assertFalse(gate["passed"])
         self.assertFalse(
-            gate["criteria"]["worst_window_wape_no_higher_than_active_v2"]
+            gate["criteria"][
+                "selected_worst_window_wape_no_higher_than_active_v2"
+            ]
         )
+
+    def test_feature_control_regression_retains_v2(self) -> None:
+        records, aggregates, resources = make_gate_evidence(
+            feature_control_rmsle=(0.6, 0.6, 0.6, 0.6),
+        )
+
+        gate = evaluate_s2_gate(records, aggregates, resources)
+
+        self.assertFalse(gate["passed"])
+        self.assertFalse(
+            gate["criteria"]["feature_control_mean_rmsle_lower_than_active_v2"]
+        )
+
+    def test_incomplete_candidate_search_retains_v2(self) -> None:
+        records, aggregates, resources = make_gate_evidence()
+        resources["fit_count"] = MAX_FITS - 1
+
+        gate = evaluate_s2_gate(records, aggregates, resources)
+
+        self.assertFalse(gate["passed"])
+        self.assertFalse(gate["criteria"]["fit_count_complete"])
 
     def test_resource_overrun_retains_v2(self) -> None:
         records, aggregates, resources = make_gate_evidence()
-        resources["challenger_total_fit_seconds"] = 301.0
+        resources["search_total_fit_seconds"] = 301.0
 
         gate = evaluate_s2_gate(records, aggregates, resources)
 
@@ -222,6 +277,62 @@ class S2GateTests(unittest.TestCase):
         matrix = np.zeros((2, 3), dtype=np.float32)
 
         self.assertEqual(matrix_nbytes(matrix), 24)
+
+
+class S2EvidenceMaterializationTests(unittest.TestCase):
+    def test_xgboost_18_can_be_both_control_and_selected_candidate(self) -> None:
+        fold_contexts: dict[str, dict[str, object]] = {}
+        prediction_cache: dict[tuple[str, str], np.ndarray] = {}
+        timing_records: list[dict[str, object]] = []
+        for index, window in enumerate(EVALUATION_WINDOWS, start=1):
+            date = pd.Timestamp(window.scoring_start)
+            fold_contexts[window.window_id] = {
+                "future": pd.DataFrame(
+                    {
+                        "id": [index],
+                        "date": [date],
+                        "store_nbr": [1],
+                        "family": ["GROCERY I"],
+                    }
+                ),
+                "actual_context": pd.DataFrame(
+                    {
+                        "id": [index],
+                        "date": [date],
+                        "store_nbr": [1],
+                        "family": ["GROCERY I"],
+                        "sales": [10.0],
+                        "onpromotion": [0],
+                        "is_holiday": [0],
+                    }
+                ),
+            }
+            prediction_cache[(window.window_id, "xgboost_18")] = np.array(
+                [10.0], dtype=np.float32
+            )
+            timing_records.append(
+                {
+                    "window_id": window.window_id,
+                    "run_id": "xgboost_18",
+                    "fit_seconds": 1.0,
+                    "predict_seconds": 0.1,
+                }
+            )
+
+        scored, metrics = materialize_s2_fold_evidence(
+            "xgboost_18",
+            pd.DataFrame(timing_records),
+            prediction_cache,
+            fold_contexts,
+        )
+
+        self.assertEqual(len(scored), 8)
+        self.assertEqual(len(metrics), 8)
+        self.assertEqual(
+            set(scored["model"]),
+            {FEATURE_CONTROL_MODEL_NAME, CHALLENGER_MODEL_NAME},
+        )
+        self.assertEqual({row["source_run_id"] for row in metrics}, {"xgboost_18"})
 
 
 class FeatureProcessorExtensionTests(unittest.TestCase):
